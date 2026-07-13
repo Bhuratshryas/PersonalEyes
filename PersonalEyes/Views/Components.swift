@@ -76,7 +76,7 @@ struct CustomPromptsEditor: View {
         } header: {
             Text("Custom Questions")
         } footer: {
-            Text("When Apple Intelligence is available, Personal Eyes answers enabled questions about each capture, in order. On devices without it, you still get the on-device description, and questions are skipped. Swipe a row to delete.")
+                    Text("Extra questions are answered after the image description when Apple Intelligence is available. Swipe a row to delete.")
         }
     }
 

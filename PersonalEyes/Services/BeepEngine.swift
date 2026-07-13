@@ -1,30 +1,28 @@
 import AVFoundation
 import Foundation
 
-/// Synthesizes the audible feedback used while the user is aiming the camera
-/// and while the captured image is being processed. All tones are generated
-/// procedurally so the app does not ship audio assets.
+/// Soft aiming tones while framing. Once a photo is captured, call
+/// ``silenceAll()`` so speech and Apple Intelligence answers are uninterrupted.
 @MainActor
 final class BeepEngine: ObservableObject {
     @Published var isMuted: Bool = false {
         didSet {
             guard oldValue != isMuted else { return }
             if isMuted {
-                stopCenteringBeep()
-                stopProcessingTone()
+                silenceAll()
             }
         }
     }
 
-    /// Set when audio engine startup fails so the UI can announce it once.
     @Published private(set) var startErrorMessage: String?
 
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var beepTimer: Timer?
     private var processingTimer: Timer?
-    private var processingStep: Int = 0
     private var isStarted = false
+    /// When true, ignore delayed tone callbacks from earlier cues.
+    private var isSilenced = false
 
     init() {
         engine.attach(player)
@@ -33,18 +31,22 @@ final class BeepEngine: ObservableObject {
     }
 
     func start() {
-        guard !isStarted else { return }
+        guard !isStarted else {
+            isSilenced = false
+            return
+        }
         do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(
                 .playback,
-                mode: .default,
+                mode: .spokenAudio,
                 options: [.mixWithOthers, .duckOthers]
             )
             try session.setActive(true, options: [])
             try engine.start()
             player.play()
             isStarted = true
+            isSilenced = false
             startErrorMessage = nil
         } catch {
             isStarted = false
@@ -57,95 +59,118 @@ final class BeepEngine: ObservableObject {
     }
 
     func stop() {
-        beepTimer?.invalidate()
-        beepTimer = nil
-        processingTimer?.invalidate()
-        processingTimer = nil
+        silenceAll()
         if isStarted {
-            player.stop()
             engine.stop()
             try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         }
         isStarted = false
     }
 
-    /// Updates the beep cadence based on how far the salient subject is from
-    /// the frame center. `distance` is 0 when centered and 1 when at the edge.
-    func updateCenteringBeep(distance: Float) {
+    /// Hard stop for all aiming / processing tones. Call as soon as a photo is taken.
+    func silenceAll() {
+        isSilenced = true
+        beepTimer?.invalidate()
+        beepTimer = nil
+        processingTimer?.invalidate()
+        processingTimer = nil
+        player.pan = 0
+        if isStarted {
+            player.stop()
+            player.reset()
+            player.play()
+        }
+    }
+
+    /// Soft Geiger-style pulse: lower, warmer, slower than a hard beep.
+    func updateCenteringBeep(distance: Float, offsetX: Float = 0, hasSubject: Bool = true) {
         guard isStarted, !isMuted else {
             beepTimer?.invalidate()
             beepTimer = nil
             return
         }
+        isSilenced = false
         beepTimer?.invalidate()
 
+        // Gentle stereo lean — keep pan narrow so it stays comfortable.
+        player.pan = max(-0.55, min(0.55, offsetX * 1.4))
+
         let clamped = max(0, min(1, distance))
-        let frequency: Double = 660 + (1.0 - Double(clamped)) * 660
-        let interval: TimeInterval = 0.10 + Double(clamped) * 0.55
+        let frequency: Double
+        let interval: TimeInterval
+        let gain: Float
+
+        if !hasSubject {
+            frequency = 312
+            interval = 1.15
+            gain = 0.045
+        } else {
+            // Warm mid tones; never pierce into high registers.
+            frequency = 340 + (1.0 - Double(clamped)) * 220
+            interval = 0.22 + Double(clamped) * 0.75
+            gain = 0.06
+        }
 
         let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.scheduleTone(frequency: frequency, duration: 0.06, gain: 0.18)
+                self?.scheduleTone(frequency: frequency, duration: 0.12, gain: gain)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         beepTimer = timer
-        scheduleTone(frequency: frequency, duration: 0.06, gain: 0.18)
+        scheduleTone(frequency: frequency, duration: 0.12, gain: gain)
     }
 
     func stopCenteringBeep() {
         beepTimer?.invalidate()
         beepTimer = nil
+        player.pan = 0
     }
 
-    /// A two-note rising chime that signals a successful auto-capture.
+    /// Soft two-note chime confirming capture, then stays silent.
     func playConfirmation() {
-        guard !isMuted else { return }
-        beepTimer?.invalidate()
-        beepTimer = nil
-        scheduleTone(frequency: 1320, duration: 0.12, gain: 0.22)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+        silenceAll()
+        guard isStarted, !isMuted else { return }
+        isSilenced = false
+        scheduleTone(frequency: 480, duration: 0.16, gain: 0.07)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
             Task { @MainActor in
-                self?.scheduleTone(frequency: 1760, duration: 0.18, gain: 0.22)
-            }
-        }
-    }
-
-    /// A "hold steady" cue: three sharp same-pitch pulses spaced over the
-    /// hold window so the user knows to stop moving while the camera waits.
-    func playHoldCue() {
-        guard !isMuted else { return }
-        beepTimer?.invalidate()
-        beepTimer = nil
-        let frequency: Double = 1100
-        let duration: TimeInterval = 0.08
-        let gain: Float = 0.26
-        scheduleTone(frequency: frequency, duration: duration, gain: gain)
-        for offset in [0.30, 0.60] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + offset) { [weak self] in
-                Task { @MainActor in
-                    self?.scheduleTone(frequency: frequency, duration: duration, gain: gain)
+                guard let self, !self.isSilenced, !self.isMuted else { return }
+                self.scheduleTone(frequency: 620, duration: 0.22, gain: 0.06)
+                // After the soft chime, stay quiet for speech / Intelligence.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    Task { @MainActor in
+                        self?.silenceAll()
+                    }
                 }
             }
         }
     }
 
-    /// Soft pulsing tone the user hears while analysis is in progress.
-    func startProcessingTone() {
+    /// Soft triple pulse for hold-still, kept quieter than aiming tones.
+    func playHoldCue() {
         guard isStarted, !isMuted else { return }
-        processingTimer?.invalidate()
-        processingStep = 0
-        let timer = Timer(timeInterval: 0.42, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                let frequencies: [Double] = [523, 659, 784, 659]
-                let frequency = frequencies[self.processingStep % frequencies.count]
-                self.scheduleTone(frequency: frequency, duration: 0.12, gain: 0.10)
-                self.processingStep += 1
+        isSilenced = false
+        beepTimer?.invalidate()
+        beepTimer = nil
+        player.pan = 0
+        let frequency: Double = 440
+        let duration: TimeInterval = 0.10
+        let gain: Float = 0.08
+        scheduleTone(frequency: frequency, duration: duration, gain: gain)
+        for offset in [0.32, 0.64] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + offset) { [weak self] in
+                Task { @MainActor in
+                    guard let self, !self.isSilenced, !self.isMuted else { return }
+                    self.scheduleTone(frequency: frequency, duration: duration, gain: gain)
+                }
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        processingTimer = timer
+    }
+
+    /// Processing tone disabled — keep the line clear for spoken answers.
+    func startProcessingTone() {
+        silenceAll()
     }
 
     func stopProcessingTone() {
@@ -154,10 +179,11 @@ final class BeepEngine: ObservableObject {
     }
 
     private func scheduleTone(frequency: Double, duration: TimeInterval, gain: Float) {
-        guard isStarted, !isMuted else { return }
+        guard isStarted, !isMuted, !isSilenced else { return }
 
         let format = engine.mainMixerNode.outputFormat(forBus: 0)
         let sampleRate = format.sampleRate
+        guard sampleRate > 0 else { return }
         let frameCount = AVAudioFrameCount(sampleRate * duration)
         guard frameCount > 0,
               let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
@@ -166,8 +192,9 @@ final class BeepEngine: ObservableObject {
 
         let channelCount = Int(format.channelCount)
         let twoPi = 2.0 * Double.pi
-        let attack: Double = 0.005
-        let release: Double = 0.04
+        // Soft attack/release so tones feel rounded, not clicky.
+        let attack: Double = 0.035
+        let release: Double = 0.055
 
         for ch in 0..<channelCount {
             guard let data = buffer.floatChannelData?[ch] else { continue }
@@ -181,7 +208,10 @@ final class BeepEngine: ObservableObject {
                 if timeFromEnd < release {
                     envelope *= max(0, timeFromEnd / release)
                 }
-                let value = sin(twoPi * frequency * t) * envelope * Double(gain)
+                // Slight fundamental + quiet octave for a warmer timbre.
+                let fundamental = sin(twoPi * frequency * t)
+                let warmth = 0.22 * sin(twoPi * frequency * 0.5 * t)
+                let value = (fundamental + warmth) * envelope * Double(gain)
                 data[i] = Float(value)
             }
         }

@@ -4,11 +4,9 @@ import Foundation
 import ImageIO
 import UIKit
 
-/// Drives the live capture pipeline used by the home screen. The controller
-/// owns an ``AVCaptureSession`` that produces both photo data and a stream of
-/// video frames. A ``CenteringDetector`` is applied to a throttled subset of
-/// the video frames so the UI can react to how well the user has the subject
-/// framed in real time.
+/// Drives the live capture pipeline used by the home screen. Frames are
+/// analyzed by ``ObjectBoxDetector`` (YOLO-style boxes) so aiming beeps and
+/// auto-capture track the object bounding-box center.
 @MainActor
 final class CameraController: NSObject, ObservableObject {
     enum State: Equatable {
@@ -29,18 +27,18 @@ final class CameraController: NSObject, ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var centeringDistance: Float = 1.0
+    @Published private(set) var subjectOffsetX: Float = 0
+    @Published private(set) var subjectOffsetY: Float = 0
     @Published private(set) var hasSubject: Bool = false
     @Published private(set) var isCenteredEnoughForCapture: Bool = false
 
     nonisolated let session = AVCaptureSession()
 
-    var onPhotoCaptured: ((UIImage) -> Void)?
+    var onPhotoCaptured: ((UIImage, CGRect?) -> Void)?
     var onError: ((String) -> Void)?
 
-    /// Tunable: how close to the center the object must be (0 = exact center,
-    /// 1 = corner). Loose enough that the user just needs the object somewhere
-    /// in the frame, not perfectly centered.
-    var centeredThreshold: Float = 0.45
+    /// How close the object-box center must be to the frame center.
+    var centeredThreshold: Float = 0.28
 
     /// Tunable: how many consecutive frames Apple's object-detection must
     /// see the object before the hold cue starts. Two frames at ~10 Hz
@@ -64,16 +62,24 @@ final class CameraController: NSObject, ObservableObject {
     )
     nonisolated private let photoOutput = AVCapturePhotoOutput()
     nonisolated private let videoOutput = AVCaptureVideoDataOutput()
-    nonisolated private let centeringDetector = CenteringDetector()
+    nonisolated private let objectDetector = ObjectBoxDetector()
+
+    @Published private(set) var subjectBox: CGRect?
+    @Published private(set) var subjectLabel: String?
 
     /// Touched only on ``sessionQueue``.
     nonisolated(unsafe) private var isConfigured = false
     /// Touched only on ``frameQueue``.
     nonisolated(unsafe) private var lastFrameAnalysisDate: Date = .distantPast
+    nonisolated private let readingLock = NSLock()
+    nonisolated(unsafe) private var pendingReading: ObjectBoxReading?
+    nonisolated(unsafe) private var isMainUpdateScheduled = false
 
     private var consecutiveCenteredFrames = 0
     nonisolated private let minimumAnalysisInterval: TimeInterval = 0.10
     private var holdTask: Task<Void, Never>?
+    private var captureTimeoutTask: Task<Void, Never>?
+    private var isCaptureInFlight = false
 
     func requestAccessAndStart() async {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
@@ -96,11 +102,10 @@ final class CameraController: NSObject, ObservableObject {
 
     func stop() {
         cancelHold()
+        cancelCaptureTimeout()
+        isCaptureInFlight = false
         stopSession()
-        consecutiveCenteredFrames = 0
-        isCenteredEnoughForCapture = false
-        hasSubject = false
-        centeringDistance = 1.0
+        resetFramingMetrics()
         if state != .unauthorized && state != .unavailable {
             state = .idle
         }
@@ -110,11 +115,10 @@ final class CameraController: NSObject, ObservableObject {
     /// before starting again so stop/start cannot race on ``sessionQueue``.
     func stopAndWait() async {
         cancelHold()
+        cancelCaptureTimeout()
+        isCaptureInFlight = false
         await stopSessionAsync()
-        consecutiveCenteredFrames = 0
-        isCenteredEnoughForCapture = false
-        hasSubject = false
-        centeringDistance = 1.0
+        resetFramingMetrics()
         if state != .unauthorized && state != .unavailable {
             state = .idle
         }
@@ -122,28 +126,86 @@ final class CameraController: NSObject, ObservableObject {
 
     func enterShowingResult() {
         cancelHold()
-        stopSession()
+        cancelCaptureTimeout()
+        isCaptureInFlight = false
+        // Keep the AVCaptureSession running. Repeated stop/start after every
+        // photo wedges the camera after a few captures on many devices.
+        resetFramingMetrics()
+        state = .showingResult
+    }
+
+    /// Stops aiming feedback once a photo has been captured. Leaves the
+    /// capture session running so the next photo can start quickly.
+    func enterProcessing() {
+        cancelHold()
+        cancelCaptureTimeout()
+        isCaptureInFlight = false
+        consecutiveCenteredFrames = 0
+        isCenteredEnoughForCapture = false
+        state = .processing
+    }
+
+    /// After the user dismisses a result, reopen aiming without a full
+    /// camera teardown when the session is still warm.
+    func prepareForNextCapture() async {
+        cancelHold()
+        cancelCaptureTimeout()
+        isCaptureInFlight = false
+        resetFramingMetrics()
+
+        if await isSessionRunning() {
+            state = .aligning
+            return
+        }
+
+        // Session died — restart with short backoff (avoids permanent hang).
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(350_000_000 * attempt))
+                await stopSessionAsync()
+            }
+            await requestAccessAndStart()
+            if state == .aligning { return }
+            if state == .unauthorized || state == .unavailable { return }
+        }
+
+        if state != .aligning && state != .unauthorized && state != .unavailable {
+            state = .idle
+            onError?("Camera could not restart. Tap the shutter to try again.")
+        }
+    }
+
+    private func isSessionRunning() async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            sessionQueue.async { [session] in
+                continuation.resume(returning: session.isRunning)
+            }
+        }
+    }
+
+    private func resetFramingMetrics() {
         consecutiveCenteredFrames = 0
         isCenteredEnoughForCapture = false
         hasSubject = false
         centeringDistance = 1.0
-        state = .showingResult
-    }
-
-    /// Stops the live preview once a photo has been captured so analysis
-    /// does not keep the camera warm.
-    func enterProcessing() {
-        cancelHold()
-        stopSession()
-        consecutiveCenteredFrames = 0
-        isCenteredEnoughForCapture = false
-        state = .processing
+        subjectOffsetX = 0
+        subjectOffsetY = 0
+        subjectBox = nil
+        subjectLabel = nil
+        objectDetector.resetTracking()
+        frameQueue.async { [weak self] in
+            guard let self else { return }
+            self.readingLock.lock()
+            self.pendingReading = nil
+            self.readingLock.unlock()
+        }
     }
 
     /// Manual capture that mirrors the auto-capture path. Skips the hold cue
     /// because the user has already committed to capturing right now.
     func captureNow() {
         guard state == .aligning || state == .holding else { return }
+        guard !isCaptureInFlight else { return }
         cancelHold()
         triggerCapture()
     }
@@ -177,15 +239,19 @@ final class CameraController: NSObject, ObservableObject {
         }
     }
 
+    private func cancelCaptureTimeout() {
+        captureTimeoutTask?.cancel()
+        captureTimeoutTask = nil
+    }
+
     private func configureAndStart() async {
         state = .starting
-        let configured = await withCheckedContinuation { continuation in
+        let configured = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             sessionQueue.async { [weak self] in
                 guard let self else {
                     continuation.resume(returning: false)
                     return
                 }
-                // Always stop first so a quick re-shutter cannot race a prior stop.
                 if self.session.isRunning {
                     self.session.stopRunning()
                 }
@@ -193,12 +259,20 @@ final class CameraController: NSObject, ObservableObject {
                 if ok {
                     self.session.startRunning()
                 }
-                continuation.resume(returning: ok)
+                continuation.resume(returning: ok && self.session.isRunning)
             }
         }
 
-        guard configured else { return }
+        guard configured else {
+            // Never leave the UI stuck in `.starting` after a failed restart.
+            if state == .starting {
+                state = .idle
+                onError?("Camera could not start. Tap the shutter to try again.")
+            }
+            return
+        }
         guard state == .starting else { return }
+        isCaptureInFlight = false
         state = .aligning
     }
 
@@ -211,7 +285,7 @@ final class CameraController: NSObject, ObservableObject {
     }
 
     private func stopSessionAsync() async {
-        await withCheckedContinuation { continuation in
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             sessionQueue.async { [session] in
                 if session.isRunning {
                     session.stopRunning()
@@ -281,13 +355,28 @@ final class CameraController: NSObject, ObservableObject {
 
     private func triggerCapture() {
         guard state == .aligning || state == .holding else { return }
+        guard !isCaptureInFlight else { return }
         holdTask?.cancel()
         holdTask = nil
+        isCaptureInFlight = true
         state = .capturing
         consecutiveCenteredFrames = 0
         isCenteredEnoughForCapture = false
 
+        scheduleCaptureTimeout()
         capturePhoto()
+    }
+
+    private func scheduleCaptureTimeout() {
+        cancelCaptureTimeout()
+        captureTimeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            guard self.state == .capturing, self.isCaptureInFlight else { return }
+            self.isCaptureInFlight = false
+            self.onError?("Capture timed out. Point again and tap the shutter.")
+            await self.stopAndWait()
+        }
     }
 
     nonisolated private func capturePhoto() {
@@ -296,7 +385,50 @@ final class CameraController: NSObject, ObservableObject {
         let output = self.photoOutput
         sessionQueue.async { [weak self] in
             guard let self else { return }
+            guard self.session.isRunning else {
+                DispatchQueue.main.async {
+                    Task { @MainActor in
+                        self.isCaptureInFlight = false
+                        self.cancelCaptureTimeout()
+                        self.onError?("Camera was not ready. Try capturing again.")
+                        self.state = .idle
+                    }
+                }
+                return
+            }
             output.capturePhoto(with: settings, delegate: self)
+        }
+    }
+
+    private func applyReading(_ reading: ObjectBoxReading) {
+        guard state == .aligning || state == .holding else { return }
+
+        centeringDistance = reading.distance
+        subjectOffsetX = reading.offsetX
+        subjectOffsetY = reading.offsetY
+        hasSubject = reading.hasSubject
+        subjectBox = reading.subjectBox
+        subjectLabel = reading.label
+
+        let isCentered = reading.isCentered
+
+        if state == .aligning {
+            if isCentered {
+                consecutiveCenteredFrames += 1
+                isCenteredEnoughForCapture = consecutiveCenteredFrames >= framesNeededForHolding
+                if isCenteredEnoughForCapture && isAutoCaptureEnabled {
+                    beginHolding()
+                }
+            } else {
+                consecutiveCenteredFrames = max(0, consecutiveCenteredFrames - 1)
+                isCenteredEnoughForCapture = false
+            }
+        } else if state == .holding {
+            if !isCentered {
+                cancelHold()
+                consecutiveCenteredFrames = 0
+                isCenteredEnoughForCapture = false
+            }
         }
     }
 }
@@ -307,48 +439,38 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // Throttle Vision work on the frame queue before running saliency.
         let now = Date()
         guard now.timeIntervalSince(lastFrameAnalysisDate) >= minimumAnalysisInterval else { return }
         lastFrameAnalysisDate = now
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        // Back camera buffers stay in landscape sensor orientation; portrait
-        // apps map that to CGImagePropertyOrientation.right.
-        let reading = centeringDetector.reading(for: pixelBuffer, orientation: .right)
+        let reading = objectDetector.reading(for: pixelBuffer, orientation: .right)
 
-        Task { @MainActor in
-            // Centering is only meaningful while the user is actively framing.
-            guard self.state == .aligning || self.state == .holding else { return }
-
-            self.centeringDistance = reading.distance
-            self.hasSubject = reading.hasSubject
-
-            let isCentered = reading.hasSubject && reading.distance < self.centeredThreshold
-
-            if self.state == .aligning {
-                if isCentered {
-                    self.consecutiveCenteredFrames += 1
-                    self.isCenteredEnoughForCapture = self.consecutiveCenteredFrames >= self.framesNeededForHolding
-                    if self.isCenteredEnoughForCapture && self.isAutoCaptureEnabled {
-                        self.beginHolding()
-                    }
-                } else {
-                    self.consecutiveCenteredFrames = max(0, self.consecutiveCenteredFrames - 1)
-                    self.isCenteredEnoughForCapture = false
-                }
-            } else if self.state == .holding {
-                if !isCentered {
-                    // User drifted off-center during the hold; bail back to
-                    // aligning so they can re-center without capturing a
-                    // mis-framed photo.
-                    self.cancelHold()
-                    self.consecutiveCenteredFrames = 0
-                    self.isCenteredEnoughForCapture = false
-                }
-            }
+        readingLock.lock()
+        pendingReading = reading
+        let shouldSchedule = !isMainUpdateScheduled
+        if shouldSchedule {
+            isMainUpdateScheduled = true
         }
+        readingLock.unlock()
+
+        guard shouldSchedule else { return }
+        Task { @MainActor [weak self] in
+            self?.flushPendingReading()
+        }
+    }
+}
+
+extension CameraController {
+    @MainActor
+    fileprivate func flushPendingReading() {
+        readingLock.lock()
+        let latest = pendingReading ?? .empty
+        pendingReading = nil
+        isMainUpdateScheduled = false
+        readingLock.unlock()
+        applyReading(latest)
     }
 }
 
@@ -360,8 +482,10 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
     ) {
         if let error {
             Task { @MainActor in
+                self.cancelCaptureTimeout()
+                self.isCaptureInFlight = false
                 self.onError?(error.localizedDescription)
-                self.stop()
+                await self.stopAndWait()
             }
             return
         }
@@ -371,15 +495,21 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
             let image = UIImage(data: data)
         else {
             Task { @MainActor in
+                self.cancelCaptureTimeout()
+                self.isCaptureInFlight = false
                 self.onError?("Could not read the captured photo.")
-                self.stop()
+                await self.stopAndWait()
             }
             return
         }
 
         Task { @MainActor in
+            self.cancelCaptureTimeout()
+            self.isCaptureInFlight = false
+            // Snapshot the aiming box before processing clears framing state.
+            let focusBox = self.subjectBox
             self.enterProcessing()
-            self.onPhotoCaptured?(image)
+            self.onPhotoCaptured?(image, focusBox)
         }
     }
 }

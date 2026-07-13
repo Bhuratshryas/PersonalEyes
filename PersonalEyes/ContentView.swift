@@ -20,12 +20,18 @@ struct ContentView: View {
     @State private var analysisGeneration = 0
     /// Toolbar master mute overlays Options without overwriting independent prefs.
     @State private var isMasterMuted = false
+    @State private var currentAimDirection: AimingGuidance.Direction = .searching
+    @State private var isPreparingNextCapture = false
+    /// First-launch guided practice until the user completes one identification.
+    @State private var isPracticeSession = false
 
     @AppStorage("PersonalEyes.hasSeenTutorial") private var hasSeenTutorial: Bool = false
     @Environment(\.scenePhase) private var scenePhase
 
     private let analyzer = ImageAnalysisService()
     private let summarizer = AISummarizer()
+    @State private var aimingGuidance = AimingGuidance()
+    private let centerHaptic = UIImpactFeedbackGenerator(style: .medium)
 
     private var preferences: AnalysisPreferences {
         preferenceStore.preferences
@@ -36,89 +42,76 @@ struct ContentView: View {
     }
 
     var body: some View {
-        Group {
-            if camera.state == .unauthorized {
-                UnauthorizedCameraView(onOpenSettings: openSystemSettings)
-            } else if camera.state == .unavailable {
-                UnavailableCameraView()
-            } else {
-                cameraScreen
+        rootContent
+            .preferredColorScheme(.dark)
+            .tint(Color.personalEyesAccent)
+            .task {
+                wireCameraIfNeeded()
+                applyPreferencesToServices()
+                centerHaptic.prepare()
+                if !hasSeenTutorial {
+                    isShowingTutorial = true
+                } else {
+                    await beginLiveCapture(announce: true)
+                }
             }
-        }
-        .preferredColorScheme(.dark)
-        .tint(Color.personalEyesAccent)
-        .task {
-            wireCameraIfNeeded()
-            applyPreferencesToServices()
-            if !hasSeenTutorial {
-                // First launch: tutorial first; camera stays off until the user
-                // taps the shutter to take a picture.
-                isShowingTutorial = true
-            } else {
-                startAudioIfNeeded()
+            .modifier(ContentViewLifecycleModifier(
+                onScenePhase: handleScenePhaseChange,
+                onAimingMetricsChanged: updateAimingFeedback,
+                onCameraState: handleStateChange,
+                onPreferencesChanged: applyPreferencesToServices,
+                onMasterMuteChanged: applyPreferencesToServices,
+                onTutorial: handleTutorialChange,
+                onResultAlert: handleResultAlertChange,
+                onSettings: handleSettingsChange,
+                onBeepError: { message in
+                    alertMessage = message
+                    UIAccessibility.post(notification: .announcement, argument: message)
+                    beepEngine.clearStartError()
+                },
+                scenePhase: scenePhase,
+                centeringDistance: camera.centeringDistance,
+                hasSubject: camera.hasSubject,
+                subjectOffsetX: camera.subjectOffsetX,
+                subjectOffsetY: camera.subjectOffsetY,
+                cameraState: camera.state,
+                autoCaptureEnabled: preferenceStore.preferences.autoCaptureEnabled,
+                soundEffectsEnabled: preferenceStore.preferences.soundEffectsEnabled,
+                isMasterMuted: isMasterMuted,
+                isShowingTutorial: isShowingTutorial,
+                isShowingResultAlert: isShowingResultAlert,
+                isShowingSettings: isShowingSettings,
+                beepError: beepEngine.startErrorMessage
+            ))
+            .sheet(isPresented: $isShowingSettings) {
+                settingsSheet
             }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            handleScenePhaseChange(newPhase)
-        }
-        .onChange(of: camera.centeringDistance) { _, distance in
-            guard camera.state == .aligning else { return }
-            beepEngine.updateCenteringBeep(distance: distance)
-        }
-        .onChange(of: camera.state) { _, newState in
-            handleStateChange(newState)
-        }
-        .onChange(of: preferenceStore.preferences.autoCaptureEnabled) { _, _ in
-            applyPreferencesToServices()
-        }
-        .onChange(of: preferenceStore.preferences.soundEffectsEnabled) { _, _ in
-            applyPreferencesToServices()
-        }
-        .onChange(of: isMasterMuted) { _, _ in
-            applyPreferencesToServices()
-        }
-        .onChange(of: isShowingTutorial) { _, isShowing in
-            handleTutorialChange(isShowing: isShowing)
-        }
-        .onChange(of: isShowingResultAlert) { _, isShowing in
-            handleResultAlertChange(isShowing: isShowing)
-        }
-        .onChange(of: isShowingSettings) { _, isShowing in
-            handleSettingsChange(isShowing: isShowing)
-        }
-        .onChange(of: beepEngine.startErrorMessage) { _, message in
-            guard let message else { return }
-            alertMessage = message
-            UIAccessibility.post(notification: .announcement, argument: message)
-            beepEngine.clearStartError()
-        }
-        .alert(
-            "Personal Eyes Result",
-            isPresented: $isShowingResultAlert,
-            presenting: result
-        ) { value in
-            Button("Hear Again") {
-                replaySpokenSummary(of: value)
+            .sheet(isPresented: $isShowingTutorial) {
+                TutorialView(isFirstLaunch: !hasSeenTutorial && !isPracticeSession) { action in
+                    switch action {
+                    case .startPractice:
+                        isPracticeSession = true
+                        isShowingTutorial = false
+                    case .close:
+                        isShowingTutorial = false
+                    }
+                }
             }
-            Button("OK", role: .cancel) {
-                dismissResultAndScanAgain()
+            .alert("Personal Eyes", isPresented: hasErrorAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(alertMessage ?? "")
             }
-        } message: { value in
-            Text(value.spokenSummary)
-        }
-        .sheet(isPresented: $isShowingSettings) {
-            settingsSheet
-        }
-        .sheet(isPresented: $isShowingTutorial) {
-            TutorialView(isFirstLaunch: !hasSeenTutorial) {
-                hasSeenTutorial = true
-                isShowingTutorial = false
-            }
-        }
-        .alert("Personal Eyes", isPresented: hasErrorAlert) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(alertMessage ?? "")
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if camera.state == .unauthorized {
+            UnauthorizedCameraView(onOpenSettings: openSystemSettings)
+        } else if camera.state == .unavailable {
+            UnavailableCameraView()
+        } else {
+            cameraScreen
         }
     }
 
@@ -141,19 +134,26 @@ struct ContentView: View {
             .ignoresSafeArea()
             .accessibilityHidden(true)
 
-            CenteringReticleView(
-                distance: camera.centeringDistance,
-                hasSubject: camera.hasSubject,
+            ObjectBoundingBoxOverlay(
+                box: camera.subjectBox,
+                isCentered: camera.isCenteredEnoughForCapture || currentAimDirection == .centered,
                 isHolding: camera.state == .holding,
                 isProcessing: camera.state == .idle
                     || camera.state == .processing
                     || camera.state == .capturing
+                    || camera.state == .starting
+                    || isPreparingNextCapture
             )
 
             VStack {
+                if isPracticeSession {
+                    practiceBanner
+                }
                 topBar
                 Spacer()
-                bottomBar
+                if camera.state != .processing, !isShowingResultAlert {
+                    bottomBar
+                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 12)
@@ -162,8 +162,42 @@ struct ContentView: View {
             if camera.state == .processing {
                 processingOverlay
             }
+
+            if isShowingResultAlert, let result {
+                ResultPanel(
+                    title: isPracticeSession ? "Practice Result" : "Personal Eyes Result",
+                    summary: result.spokenSummary,
+                    note: result.usedAppleIntelligence ? nil : result.availabilityNote,
+                    thumbnail: capturedImage,
+                    usedAppleIntelligence: result.usedAppleIntelligence,
+                    primaryButtonTitle: isPracticeSession ? "Finish practice" : "OK",
+                    onHearAgain: { replaySpokenSummary(of: result) },
+                    onDismiss: dismissResultAndScanAgain
+                )
+                .zIndex(20)
+            }
         }
         .background(Color.black)
+        .animation(.easeInOut(duration: 0.22), value: isShowingResultAlert)
+        .animation(.easeInOut(duration: 0.22), value: camera.state == .processing)
+    }
+
+    private var practiceBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "graduationcap.fill")
+                .accessibilityHidden(true)
+            Text("Practice: point at something nearby, center it, then tap shutter.")
+                .font(.footnote.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Practice mode. Point at something nearby, center it, then tap the shutter.")
+        .padding(.bottom, 8)
     }
 
     private var topBar: some View {
@@ -199,8 +233,8 @@ struct ContentView: View {
             .accessibilityLabel(isMasterMuted ? "Unmute audio" : "Mute audio")
             .accessibilityHint(
                 isMasterMuted
-                    ? "Restores sound effects and spoken summary based on Options"
-                    : "Temporarily silences sound effects and the spoken summary without changing Options"
+                    ? "Restores aiming sounds and spoken answers based on Options"
+                    : "Temporarily silences aiming sounds and spoken answers without changing Options"
             )
 
             Button {
@@ -242,8 +276,9 @@ struct ContentView: View {
                 ShutterButton(
                     isProcessing: camera.state == .processing
                         || camera.state == .capturing
-                        || camera.state == .starting,
-                    opensCamera: camera.state == .idle,
+                        || camera.state == .starting
+                        || isPreparingNextCapture,
+                    opensCamera: false,
                     action: shutterTapped
                 )
                 Spacer()
@@ -271,13 +306,9 @@ struct ContentView: View {
                     .controlSize(.large)
                     .tint(Color.white)
 
-                Text("Analyzing image…")
+                Text("Reading the photo…")
                     .font(.headline)
                     .foregroundStyle(.white)
-
-                Text("Reading text and creating a spoken summary.")
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center)
             }
             .padding(28)
@@ -286,7 +317,8 @@ struct ContentView: View {
         }
         .transition(.opacity)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Analyzing image. Reading text and creating a spoken summary.")
+        .accessibilityLabel("Reading the photo.")
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var settingsSheet: some View {
@@ -295,40 +327,45 @@ struct ContentView: View {
                 Section {
                     PreferenceToggle(
                         title: "Auto-capture",
-                        subtitle: "Captures automatically when an object is in the frame.",
+                        subtitle: "Captures automatically when a subject is centered.",
                         isOn: preferencesBinding.autoCaptureEnabled
                     )
                     PreferenceToggle(
-                        title: "Sound effects",
-                        subtitle: "Centering beep, hold cue, capture chime, and processing tone.",
+                        title: "Aiming sounds",
+                        subtitle: "Geiger-style beep that speeds up as you center, with left/right stereo pan.",
                         isOn: preferencesBinding.soundEffectsEnabled
                     )
                     PreferenceToggle(
-                        title: "Spoken summary",
-                        subtitle: "Reads the result aloud after each capture.",
+                        title: "Direction cues",
+                        subtitle: "Speaks left, right, up, down, and centered while you aim.",
+                        isOn: preferencesBinding.directionalGuidanceEnabled
+                    )
+                    PreferenceToggle(
+                        title: "Spoken answer",
+                        subtitle: "Reads the Apple Intelligence answer aloud after each capture.",
                         isOn: preferencesBinding.spokenSummaryEnabled
                     )
                 } header: {
                     Text("Capture & Audio")
                 } footer: {
-                    Text("With auto-capture off, the round shutter button captures on demand. Sound effects and the spoken summary can be muted independently in Options. The toolbar mute button silences both temporarily.")
+                    Text("Directional speech and aiming sounds are the main guidance loop. The toolbar mute silences them temporarily without changing these Options.")
                 }
 
                 Section {
                     PreferenceToggle(
                         title: "Detailed description",
-                        subtitle: "On: 1 to 2 sentences with context. Off: a fast 3-word reply.",
+                        subtitle: "On: 1 to 2 sentences. Off: a fast 3-word reply.",
                         isOn: preferencesBinding.detailedDescription
                     )
                     PreferenceToggle(
                         title: "Read visible text",
-                        subtitle: "Includes useful labels, signs, prices, and packaging text in the response.",
+                        subtitle: "When text is found (signs, labels, prices), mention it. If none, just describe the image.",
                         isOn: preferencesBinding.includeVisibleText
                     )
                 } header: {
                     Text("What Personal Eyes Says")
                 } footer: {
-                    Text("Personal Eyes works on anything you point it at — products, signs, food, books, scenes. By default you get a short spoken paragraph; turn this off for a fast three-word reply.")
+                    Text("Every capture describes what the photo shows — people, objects, or the scene. Text is spoken only when useful readable text is actually there.")
                 }
 
                 CustomPromptsEditor(store: promptStore)
@@ -342,7 +379,7 @@ struct ContentView: View {
                     } label: {
                         Label("Show Tutorial", systemImage: "graduationcap")
                     }
-                    .accessibilityHint("Re-opens the tutorial that explains how to use Personal Eyes")
+                    .accessibilityHint("Re-opens the guide that explains how to use Personal Eyes")
                 }
 
                 Section {
@@ -378,7 +415,7 @@ struct ContentView: View {
                         isShowingSettings = false
                     }
                     .fontWeight(.semibold)
-                    .accessibilityHint("Closes options. Tap the shutter when you are ready to open the camera.")
+                    .accessibilityHint("Closes options and returns to capture.")
                 }
             }
         }
@@ -389,7 +426,11 @@ struct ContentView: View {
     }
 
     private var isAnyAudioOn: Bool {
-        !isMasterMuted && (preferences.soundEffectsEnabled || preferences.spokenSummaryEnabled)
+        !isMasterMuted && (
+            preferences.soundEffectsEnabled
+                || preferences.spokenSummaryEnabled
+                || preferences.directionalGuidanceEnabled
+        )
     }
 
     private var effectiveSoundEffectsEnabled: Bool {
@@ -400,6 +441,10 @@ struct ContentView: View {
         !isMasterMuted && preferences.spokenSummaryEnabled
     }
 
+    private var effectiveDirectionalGuidanceEnabled: Bool {
+        !isMasterMuted && preferences.directionalGuidanceEnabled
+    }
+
     private var hasErrorAlert: Binding<Bool> {
         Binding(
             get: { alertMessage != nil },
@@ -408,61 +453,96 @@ struct ContentView: View {
     }
 
     private var statusTitle: String {
+        if isPreparingNextCapture { return "Getting ready" }
+        if isPracticeSession, camera.state == .aligning || camera.state == .starting {
+            return "Practice — find an object"
+        }
         switch camera.state {
-        case .idle: return "Ready to scan"
+        case .idle: return "Starting camera"
         case .starting: return "Starting camera"
         case .unauthorized: return "Camera access needed"
         case .unavailable: return "Camera unavailable"
         case .aligning:
-            if !camera.hasSubject { return "Looking for an object" }
-            if camera.centeringDistance < camera.centeredThreshold {
-                return preferences.autoCaptureEnabled ? "Object found" : "Object found, tap shutter"
+            switch currentAimDirection {
+            case .searching: return "Looking for an object"
+            case .left: return "Point left"
+            case .right: return "Point right"
+            case .up: return "Point up"
+            case .down: return "Point down"
+            case .centered:
+                return preferences.autoCaptureEnabled ? "Object centered" : "Object centered — tap shutter"
             }
-            return "Object detected"
         case .holding: return "Stop. Hold still."
         case .capturing: return "Captured"
-        case .processing: return "Analyzing image"
+        case .processing: return "Reading the photo"
         case .showingResult: return "Result ready"
         }
     }
 
     private var statusSubtitle: String {
+        if isPreparingNextCapture {
+            return "Opening the camera for the next capture."
+        }
+        if isPracticeSession {
+            switch camera.state {
+            case .aligning, .starting, .idle:
+                return "Practice: point at a nearby object, center it, then tap the shutter."
+            case .showingResult:
+                return "Listen to the answer, then finish practice."
+            default:
+                break
+            }
+        }
         switch camera.state {
         case .idle:
-            return "Tap the shutter to open the camera. Tap again when you want the picture."
+            return "Turning the camera on so you can start identifying."
         case .starting:
             return "Hold the phone upright."
         case .unauthorized: return "Open Settings to allow camera access."
         case .unavailable: return "This device does not have a usable camera."
         case .aligning:
-            if !camera.hasSubject {
+            switch currentAimDirection {
+            case .searching:
                 return effectiveSoundEffectsEnabled
-                    ? "Move slowly until you hear a beep."
-                    : "Move slowly until something is in view."
-            }
-            if camera.centeringDistance < camera.centeredThreshold {
+                    ? "Move slowly until the beep starts."
+                    : "Move slowly until a subject is found."
+            case .left, .right, .up, .down:
+                return effectiveSoundEffectsEnabled
+                    ? "Follow the cue. The beep speeds up as you center."
+                    : "Follow the direction cue until centered."
+            case .centered:
                 return preferences.autoCaptureEnabled
-                    ? "Capturing in a moment."
-                    : "Tap the shutter button to capture."
+                    ? "Hold steady — capturing soon."
+                    : "Tap the shutter to capture."
             }
-            return effectiveSoundEffectsEnabled
-                ? "The beep gets faster as the object centers."
-                : "Move slowly to bring the object into view."
         case .holding: return "Capturing now."
-        case .capturing: return "Reading the image."
-        case .processing: return "Reading text and writing a spoken summary."
-        case .showingResult: return "Listen, then press OK. Tap the shutter when you want another picture."
+        case .capturing: return "Photo saved. Preparing the answer."
+        case .processing: return "One moment."
+        case .showingResult:
+            return isPracticeSession
+                ? "Listen, then finish practice to keep using Personal Eyes."
+                : "Listen, then tap OK to aim again."
         }
     }
 
     private var statusIcon: String {
+        if isPreparingNextCapture { return "arrow.triangle.2.circlepath.camera" }
         switch camera.state {
         case .idle: return "camera.fill"
         case .holding: return "hand.raised.fill"
-        case .processing: return "waveform"
+        case .processing: return "sparkles"
         case .capturing: return "camera.fill"
         case .showingResult: return "checkmark.seal.fill"
         case .unauthorized, .unavailable: return "exclamationmark.triangle.fill"
+        case .aligning:
+            switch currentAimDirection {
+            case .left: return "arrow.left"
+            case .right: return "arrow.right"
+            case .up: return "arrow.up"
+            case .down: return "arrow.down"
+            case .centered: return "checkmark.circle"
+            case .searching: return "viewfinder"
+            }
         default: return "viewfinder"
         }
     }
@@ -470,14 +550,8 @@ struct ContentView: View {
     private var centeringHint: String {
         switch camera.state {
         case .holding: return "Hold still"
-        case .aligning:
-            guard camera.hasSubject else { return "Move slowly to find an object" }
-            if camera.centeringDistance < camera.centeredThreshold {
-                return preferences.autoCaptureEnabled ? "Get ready" : "Tap shutter"
-            }
-            return "Bring the object into view"
-        default:
-            return ""
+        case .aligning: return currentAimDirection.statusPhrase
+        default: return ""
         }
     }
 
@@ -487,13 +561,17 @@ struct ContentView: View {
 
     private func wireCameraIfNeeded() {
         guard !isCameraWired else { return }
-        camera.onPhotoCaptured = { image in
+        camera.onPhotoCaptured = { image, focusBox in
             Task { @MainActor in
                 self.analysisTask?.cancel()
                 self.analysisGeneration += 1
                 let generation = self.analysisGeneration
                 self.analysisTask = Task { @MainActor in
-                    await self.handleCapturedImage(image, generation: generation)
+                    await self.handleCapturedImage(
+                        image,
+                        focusBox: focusBox,
+                        generation: generation
+                    )
                 }
             }
         }
@@ -511,10 +589,11 @@ struct ContentView: View {
     }
 
     private func shutterTapped() {
+        guard !isPreparingNextCapture else { return }
         switch camera.state {
         case .idle:
             Task { @MainActor in
-                await camera.requestAccessAndStart()
+                await beginLiveCapture(announce: false)
             }
         case .aligning, .holding:
             camera.captureNow()
@@ -529,26 +608,111 @@ struct ContentView: View {
         hasStartedAudio = true
     }
 
+    /// Turns the camera on so the user can aim and identify immediately.
+    @MainActor
+    private func beginLiveCapture(announce: Bool) async {
+        startAudioIfNeeded()
+        switch camera.state {
+        case .unauthorized, .unavailable, .aligning, .starting, .holding, .capturing, .processing:
+            break
+        case .idle, .showingResult:
+            await camera.requestAccessAndStart()
+        }
+
+        guard announce else { return }
+        guard camera.state == .aligning || camera.state == .starting else { return }
+
+        let message: String
+        if isPracticeSession {
+            message = "Practice mode. Point at something nearby, center it, then tap the shutter."
+        } else {
+            message = "Camera on. Point at something to identify."
+        }
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: message)
+        } else if effectiveDirectionalGuidanceEnabled || effectiveSpokenSummaryEnabled {
+            speaker.speak(message, style: .cue)
+        } else {
+            UIAccessibility.post(notification: .announcement, argument: message)
+        }
+    }
+
     private func cancelInFlightAnalysis() {
         analysisTask?.cancel()
         analysisTask = nil
         analysisGeneration += 1
     }
 
+    private func updateAimingFeedback() {
+        guard camera.state == .aligning else { return }
+        guard !isShowingResultAlert, !speaker.isHoldingForAnswer else { return }
+
+        let direction = aimingGuidance.direction(
+            hasSubject: camera.hasSubject,
+            offsetX: camera.subjectOffsetX,
+            offsetY: camera.subjectOffsetY,
+            distance: camera.centeringDistance,
+            centeredThreshold: camera.centeredThreshold
+        )
+        currentAimDirection = direction
+
+        // Beep only while an object box is tracked — silence when searching.
+        if camera.hasSubject {
+            beepEngine.updateCenteringBeep(
+                distance: camera.centeringDistance,
+                offsetX: camera.subjectOffsetX,
+                hasSubject: true
+            )
+        } else {
+            beepEngine.stopCenteringBeep()
+        }
+
+        if aimingGuidance.shouldPlayCenterHaptic(for: direction) {
+            centerHaptic.impactOccurred()
+        }
+
+        if let cue = aimingGuidance.spokenCueIfNeeded(
+            for: direction,
+            speechEnabled: effectiveDirectionalGuidanceEnabled
+        ) {
+            // Prefer the clearer centered instruction when manual shutter is needed.
+            if direction == .centered, !preferences.autoCaptureEnabled {
+                announceAimingCue("Object centered. Tap shutter.")
+            } else if direction == .centered, preferences.autoCaptureEnabled {
+                announceAimingCue("Object centered.")
+            } else {
+                announceAimingCue(cue)
+            }
+        }
+    }
+
+    private func announceAimingCue(_ cue: String) {
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: cue)
+        } else {
+            speaker.speak(cue, style: .cue)
+        }
+    }
+
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
         switch newPhase {
-        case .background, .inactive:
-            // Stop talking and beeping the moment the user returns to home
-            // screen, locks the device, or backgrounds the app for any reason.
+        case .background:
             cancelInFlightAnalysis()
+            isPreparingNextCapture = false
             speaker.stop()
             beepEngine.stop()
             hasStartedAudio = false
+            aimingGuidance.reset()
             camera.stop()
+        case .inactive:
+            // System alerts briefly inactive the scene. Do NOT stop speech here
+            // or the spoken result dies after capture.
+            beepEngine.silenceAll()
         case .active:
-            // Don't resume audio if a sheet or tutorial still has focus.
             guard !isShowingTutorial, !isShowingResultAlert, !isShowingSettings else { return }
-            startAudioIfNeeded()
+            Task { @MainActor in
+                await beginLiveCapture(announce: false)
+            }
         @unknown default:
             break
         }
@@ -557,35 +721,41 @@ struct ContentView: View {
     @MainActor
     private func handleTutorialChange(isShowing: Bool) {
         if isShowing {
-            // Camera and audio are paused while the user reads the tutorial.
             cancelInFlightAnalysis()
+            isPreparingNextCapture = false
             speaker.stop()
-            beepEngine.stopCenteringBeep()
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
+            aimingGuidance.reset()
             camera.stop()
         } else {
-            startAudioIfNeeded()
+            Task { @MainActor in
+                await beginLiveCapture(announce: true)
+            }
         }
     }
 
     @MainActor
     private func handleSettingsChange(isShowing: Bool) {
-        guard isShowing else { return }
-        cancelInFlightAnalysis()
-        speaker.stop()
-        beepEngine.stopCenteringBeep()
-        beepEngine.stopProcessingTone()
-        camera.stop()
+        if isShowing {
+            cancelInFlightAnalysis()
+            isPreparingNextCapture = false
+            speaker.stop()
+            beepEngine.silenceAll()
+            aimingGuidance.reset()
+            camera.stop()
+        } else {
+            Task { @MainActor in
+                await beginLiveCapture(announce: false)
+            }
+        }
     }
 
     @MainActor
     private func handleResultAlertChange(isShowing: Bool) {
         if isShowing {
-            // Pause the camera while the user is reading or listening to the
-            // result. The session stays off until the next shutter tap.
             camera.enterShowingResult()
-            beepEngine.stopCenteringBeep()
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
+            aimingGuidance.reset()
         }
     }
 
@@ -593,97 +763,271 @@ struct ContentView: View {
     private func handleStateChange(_ newState: CameraController.State) {
         switch newState {
         case .aligning:
-            beepEngine.updateCenteringBeep(distance: camera.centeringDistance)
+            aimingGuidance.reset()
+            updateAimingFeedback()
         case .holding:
-            // Hold cue must reach blind users even when sound effects are off.
             beepEngine.stopCenteringBeep()
             beepEngine.playHoldCue()
             let holdPhrase = "Stop. Stop. Stop."
-            if effectiveSpokenSummaryEnabled, !UIAccessibility.isVoiceOverRunning {
-                speaker.speak(holdPhrase)
+            if effectiveSpokenSummaryEnabled || effectiveDirectionalGuidanceEnabled {
+                if UIAccessibility.isVoiceOverRunning {
+                    UIAccessibility.post(notification: .announcement, argument: holdPhrase)
+                } else {
+                    speaker.speak(holdPhrase, style: .cue)
+                }
             } else {
                 UIAccessibility.post(notification: .announcement, argument: holdPhrase)
             }
         case .capturing:
-            beepEngine.stopCenteringBeep()
+            // Stop all aiming beeps the instant the shutter fires.
+            beepEngine.silenceAll()
             beepEngine.playConfirmation()
             UIAccessibility.post(notification: .announcement, argument: "Captured.")
         case .processing:
-            beepEngine.startProcessingTone()
+            // Stay silent so Apple Intelligence answers can be heard clearly.
+            beepEngine.silenceAll()
         default:
-            beepEngine.stopCenteringBeep()
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
         }
     }
 
     @MainActor
-    private func handleCapturedImage(_ image: UIImage, generation: Int) async {
+    private func handleCapturedImage(
+        _ image: UIImage,
+        focusBox: CGRect?,
+        generation: Int
+    ) async {
         guard generation == analysisGeneration else { return }
         capturedImage = image
-        UIAccessibility.post(notification: .announcement, argument: "Image captured. Analyzing.")
+        UIAccessibility.post(
+            notification: .announcement,
+            argument: "Image captured."
+        )
 
         do {
-            let analysis = try await analyzer.analyze(image, preferences: preferences)
-            try Task.checkCancellation()
+            let enriched = try await withThrowingTaskGroup(of: ImageAnalysisResult.self) { group in
+                group.addTask { @MainActor in
+                    try await self.runAnalysisPipeline(
+                        image: image,
+                        focusBox: focusBox,
+                        generation: generation
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: 35_000_000_000)
+                    throw AnalysisPipelineTimeout()
+                }
+                let value = try await group.next()!
+                group.cancelAll()
+                return value
+            }
+
             guard generation == analysisGeneration else { return }
 
-            let summary = await summarizer.summarize(.init(
-                visibleText: analysis.visibleText,
-                classification: analysis.objectName,
-                preferences: preferences,
-                customQuestions: promptStore.enabledQuestions
-            ))
-            try Task.checkCancellation()
-            guard generation == analysisGeneration else { return }
-
-            var enriched = analysis
-            enriched.aiSummary = summary.summary
-            enriched.usedAppleIntelligence = summary.usedAppleIntelligence
-
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
             result = enriched
             isShowingResultAlert = true
+            // Don't rely only on SwiftUI onChange ordering.
+            camera.enterShowingResult()
 
-            // Speak the summary unless the user disabled spoken playback or
-            // VoiceOver is running (in which case VoiceOver reads the alert).
-            if effectiveSpokenSummaryEnabled, !UIAccessibility.isVoiceOverRunning {
-                speaker.speak(enriched.spokenSummary)
+            if effectiveSpokenSummaryEnabled {
+                let answer = enriched.spokenSummary
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    guard self.analysisGeneration == generation else { return }
+                    beepEngine.silenceAll()
+                    if UIAccessibility.isVoiceOverRunning {
+                        UIAccessibility.post(notification: .announcement, argument: answer)
+                    } else {
+                        speaker.speak(answer, style: .answer)
+                    }
+                }
             }
         } catch is CancellationError {
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
+            if generation == analysisGeneration, camera.state == .processing {
+                await camera.prepareForNextCapture()
+            }
+        } catch is AnalysisPipelineTimeout {
+            guard generation == analysisGeneration else { return }
+            beepEngine.silenceAll()
+            // Still return a usable Vision fallback so the loop never wedges.
+            let fallback = ImageAnalysisResult(
+                objectName: nil,
+                confidence: nil,
+                visibleText: [],
+                aiSummary: "I could not finish reading that photo in time. Point again and tap the shutter.",
+                usedAppleIntelligence: false,
+                availabilityNote: "Analysis timed out, so Personal Eyes stopped waiting.",
+                timestamp: Date()
+            )
+            result = fallback
+            isShowingResultAlert = true
+            camera.enterShowingResult()
+            if effectiveSpokenSummaryEnabled {
+                speaker.speak(fallback.spokenSummary, style: .answer)
+            }
         } catch {
             guard generation == analysisGeneration else { return }
-            beepEngine.stopProcessingTone()
+            beepEngine.silenceAll()
             alertMessage = error.localizedDescription
-            camera.stop()
+            await camera.prepareForNextCapture()
         }
+    }
+
+    @MainActor
+    private func runAnalysisPipeline(
+        image: UIImage,
+        focusBox: CGRect?,
+        generation: Int
+    ) async throws -> ImageAnalysisResult {
+        let analysis = try await analyzer.analyze(
+            image,
+            preferences: preferences,
+            focusBox: focusBox
+        )
+        try Task.checkCancellation()
+        guard generation == analysisGeneration else {
+            throw CancellationError()
+        }
+
+        let summary = await summarizer.summarize(.init(
+            image: image,
+            visibleText: analysis.visibleText,
+            classification: analysis.objectName,
+            classificationConfidence: analysis.confidence,
+            allLabels: analysis.labels,
+            peopleCount: analysis.peopleCount,
+            preferences: preferences,
+            customQuestions: promptStore.enabledQuestions
+        ))
+        try Task.checkCancellation()
+        guard generation == analysisGeneration else {
+            throw CancellationError()
+        }
+
+        var enriched = analysis
+        enriched.aiSummary = summary.summary
+        enriched.usedAppleIntelligence = summary.usedAppleIntelligence
+        enriched.availabilityNote = summary.availabilityNote
+        return enriched
     }
 
     @MainActor
     private func replaySpokenSummary(of value: ImageAnalysisResult) {
         speaker.stop()
+        beepEngine.silenceAll()
         if UIAccessibility.isVoiceOverRunning {
             UIAccessibility.post(notification: .announcement, argument: value.spokenSummary)
         } else if effectiveSpokenSummaryEnabled {
-            speaker.speak(value.spokenSummary)
+            speaker.speak(value.spokenSummary, style: .answer)
         }
-        // Keep the result alert up; do not dismiss and re-present (that
-        // steals VoiceOver focus).
         isShowingResultAlert = true
     }
 
     @MainActor
     private func dismissResultAndScanAgain() {
-        speaker.stop()
+        speaker.resetForNextCapture()
+        beepEngine.silenceAll()
         result = nil
         capturedImage = nil
         isShowingResultAlert = false
-        camera.stop()
+        aimingGuidance.reset()
+        currentAimDirection = .searching
+
+        let finishingPractice = isPracticeSession
+        if finishingPractice {
+            isPracticeSession = false
+            hasSeenTutorial = true
+        }
+
+        if isPreparingNextCapture { return }
+        isPreparingNextCapture = true
+        Task { @MainActor in
+            defer { isPreparingNextCapture = false }
+            startAudioIfNeeded()
+            beepEngine.start()
+            await camera.prepareForNextCapture()
+
+            if camera.state != .aligning,
+               camera.state != .unauthorized,
+               camera.state != .unavailable {
+                // One more recovery attempt if restart failed silently.
+                await camera.requestAccessAndStart()
+            }
+            guard camera.state == .aligning else { return }
+
+            let ready: String
+            if finishingPractice {
+                ready = "Practice complete. Camera on. Point at something to identify."
+            } else {
+                ready = "Ready. Point at the next subject."
+            }
+            if effectiveDirectionalGuidanceEnabled || effectiveSpokenSummaryEnabled {
+                if UIAccessibility.isVoiceOverRunning {
+                    UIAccessibility.post(notification: .announcement, argument: ready)
+                } else {
+                    speaker.speak(ready, style: .cue)
+                }
+            } else {
+                UIAccessibility.post(notification: .announcement, argument: ready)
+            }
+        }
     }
 
     private func openSystemSettings() {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
         }
+    }
+}
+
+private struct AnalysisPipelineTimeout: Error {}
+
+/// Breaks ContentView's modifier chain into a separate type so the compiler
+/// can type-check the screen in reasonable time.
+private struct ContentViewLifecycleModifier: ViewModifier {
+    var onScenePhase: (ScenePhase) -> Void
+    var onAimingMetricsChanged: () -> Void
+    var onCameraState: (CameraController.State) -> Void
+    var onPreferencesChanged: () -> Void
+    var onMasterMuteChanged: () -> Void
+    var onTutorial: (Bool) -> Void
+    var onResultAlert: (Bool) -> Void
+    var onSettings: (Bool) -> Void
+    var onBeepError: (String) -> Void
+
+    var scenePhase: ScenePhase
+    var centeringDistance: Float
+    var hasSubject: Bool
+    var subjectOffsetX: Float
+    var subjectOffsetY: Float
+    var cameraState: CameraController.State
+    var autoCaptureEnabled: Bool
+    var soundEffectsEnabled: Bool
+    var isMasterMuted: Bool
+    var isShowingTutorial: Bool
+    var isShowingResultAlert: Bool
+    var isShowingSettings: Bool
+    var beepError: String?
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: scenePhase) { _, newPhase in onScenePhase(newPhase) }
+            .onChange(of: centeringDistance) { _, _ in onAimingMetricsChanged() }
+            .onChange(of: hasSubject) { _, _ in onAimingMetricsChanged() }
+            .onChange(of: subjectOffsetX) { _, _ in onAimingMetricsChanged() }
+            .onChange(of: subjectOffsetY) { _, _ in onAimingMetricsChanged() }
+            .onChange(of: cameraState) { _, newState in onCameraState(newState) }
+            .onChange(of: autoCaptureEnabled) { _, _ in onPreferencesChanged() }
+            .onChange(of: soundEffectsEnabled) { _, _ in onPreferencesChanged() }
+            .onChange(of: isMasterMuted) { _, _ in onMasterMuteChanged() }
+            .onChange(of: isShowingTutorial) { _, isShowing in onTutorial(isShowing) }
+            .onChange(of: isShowingResultAlert) { _, isShowing in onResultAlert(isShowing) }
+            .onChange(of: isShowingSettings) { _, isShowing in onSettings(isShowing) }
+            .onChange(of: beepError) { _, message in
+                guard let message else { return }
+                onBeepError(message)
+            }
     }
 }

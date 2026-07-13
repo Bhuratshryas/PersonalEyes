@@ -4,18 +4,19 @@ Native iOS app for blind and low-vision users: **local AI** describes what the c
 
 ## Features
 
-- **Shutter-first camera:** the capture session starts when you choose to scan; it turns off after each result, in the tutorial, and while Options are open.
-- **Centering feedback:** optional procedural beeps that speed up as the main subject nears the frame center; optional auto-capture with a short “hold still” cue before capture.
-- **Spoken summaries:** detailed description by default; optional short three-word mode; custom questions in Options.
-- **Accessibility:** VoiceOver-friendly labels and hints; spoken summary can be muted independently from sound effects.
-- **First-launch tutorial** explains the flow without turning the camera on.
+- **Camera-on by default:** opening the app turns the camera on so you can aim immediately.
+- **First-launch practice:** a short tutorial ends with a real practice capture before the app is marked ready.
+- **Directional aiming cues:** detects an object box, draws it on screen, and guides with Left / Right / Up / Down until the box is centered — then announces tap-shutter or auto-captures.
+- **Spoken answers:** each capture describes what the photo shows via Apple Intelligence when available.
+- **Accessibility:** VoiceOver-friendly labels and hints; aiming sounds, direction cues, and spoken answers can be controlled independently.
+- **First-launch tutorial** includes a practice capture; camera starts after the tutorial (and on later launches).
 
 ## How it works
 
-1. Tap the shutter to open the camera, aim, then tap again to capture (unless auto-capture is enabled).
-2. Vision runs `VNRecognizeTextRequest`, `VNClassifyImageRequest`, and objectness-based saliency for framing.
-3. `AISummarizer` uses Apple Intelligence (`FoundationModels` / `LanguageModelSession`) when available, otherwise a deterministic on-device summary.
-4. Results appear in a system alert with **Hear Again** and **OK**; `AVSpeechSynthesizer` can read the summary when VoiceOver is off.
+1. The camera starts when you open the app (after the first-launch practice tutorial). Aim, then tap the shutter to capture (unless auto-capture is enabled).
+2. Vision runs OCR, classification, and objectness-based saliency for framing.
+3. `AISummarizer` describes the overall image with Apple Intelligence when available, otherwise a deterministic on-device summary.
+4. Results appear in a system alert with **Hear Again** and **OK**; after OK the camera starts again for the next picture.
 
 ## Privacy
 
@@ -40,7 +41,9 @@ Native iOS app for blind and low-vision users: **local AI** describes what the c
 - `PersonalEyes/PersonalEyesApp.swift` and `ContentView.swift` — App entry and the camera-first home screen.
 - `PersonalEyes/Services/CameraController.swift` — Live capture, frame analysis, and auto-capture state machine.
 - `PersonalEyes/Services/CenteringDetector.swift` — Vision saliency-based centering distance metric.
-- `PersonalEyes/Services/BeepEngine.swift` — Procedural sine-wave tones for centering, capture confirmation, and processing feedback.
+- `PersonalEyes/Services/ObjectBoxDetector.swift` — YOLO-style detect → track box → center distance (Vision objectness boxes today; Core ML YOLO plug-in ready).
+- `PersonalEyes/Services/AimingGuidance.swift` — Throttled left/right/up/down/centered speech cues.
+- `PersonalEyes/Services/BeepEngine.swift` — Geiger-style tones with stereo pan for aiming.
 - `PersonalEyes/Services/ImageAnalysisService.swift` — Vision OCR + classification.
 - `PersonalEyes/Services/AISummarizer.swift` — Apple Intelligence summary with deterministic fallback.
 - `PersonalEyes/Services/SpeechAnnouncer.swift` — Speech synthesis and VoiceOver announcements with `isSpeaking` state.

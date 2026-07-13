@@ -1,39 +1,74 @@
 import SwiftUI
 
+enum TutorialDismissal {
+    /// First-launch user is ready to practice with the live camera.
+    case startPractice
+    /// Returning user closed the how-to sheet.
+    case close
+}
+
 struct TutorialView: View {
     let isFirstLaunch: Bool
-    let onDone: () -> Void
+    let onDismiss: (TutorialDismissal) -> Void
 
-    private let steps: [TutorialStep] = [
+    private var steps: [TutorialStep] {
+        if isFirstLaunch {
+            return practiceSteps
+        }
+        return referenceSteps
+    }
+
+    private let practiceSteps: [TutorialStep] = [
         TutorialStep(
             number: 1,
-            systemImage: "viewfinder",
-            title: "Open the camera, then aim",
-            body: "On the main screen, tap the shutter once to turn on the camera. Hold the phone upright and point it at what you want to know about. Tap the shutter again to take the picture when you are ready."
+            systemImage: "hand.wave.fill",
+            title: "Welcome",
+            body: "Personal Eyes describes what your camera sees, on your iPhone. Next you’ll practice with a real object nearby."
         ),
         TutorialStep(
             number: 2,
-            systemImage: "speaker.wave.3.fill",
-            title: "Optional framing sounds",
-            body: "If Sound effects is on in Options, a beep gets faster as an object enters the view. With sound off, use the status message and move slowly until something is detected."
+            systemImage: "camera.fill",
+            title: "Camera turns on for you",
+            body: "After this screen, the camera opens automatically. Hold the phone upright and point it at something on a table, like a cup, book, or remote."
         ),
         TutorialStep(
             number: 3,
-            systemImage: "hand.raised.fill",
-            title: "Hold still on cue",
-            body: "With Auto-capture on, Personal Eyes says \"Stop. Stop. Stop.\" when an object is ready, then captures after a brief hold. With Auto-capture off, tap the shutter whenever you are ready."
+            systemImage: "viewfinder.rectangular",
+            title: "Center the object",
+            body: "Listen for Left, Right, Up, or Down. When you hear \"Object centered,\" tap the round shutter button to take the picture."
         ),
         TutorialStep(
             number: 4,
-            systemImage: "sparkles",
-            title: "Hear the response",
-            body: "Personal Eyes reads a clear, short on-device description by default. A pop-up shows the full text — press OK when you are done. Turn off \"Detailed description\" in Options if you prefer a quick three-word reply."
+            systemImage: "ear.fill",
+            title: "Hear the answer",
+            body: "Personal Eyes describes what the photo shows. That practice capture finishes the tutorial."
+        )
+    ]
+
+    private let referenceSteps: [TutorialStep] = [
+        TutorialStep(
+            number: 1,
+            systemImage: "camera.fill",
+            title: "Camera stays ready",
+            body: "When you open Personal Eyes, the camera turns on so you can aim right away. Tap the shutter when an object is centered."
         ),
         TutorialStep(
-            number: 5,
-            systemImage: "questionmark.bubble",
-            title: "Ask your own questions",
-            body: "Open Options to add questions like \"What color is this?\" or \"What does the sign say?\". When Apple Intelligence is available, Personal Eyes answers them with every capture."
+            number: 2,
+            systemImage: "viewfinder.rectangular",
+            title: "Follow the object box",
+            body: "A box tracks the main object. Beeps get faster as it nears the center. Direction cues say Left, Right, Up, Down, then Object centered."
+        ),
+        TutorialStep(
+            number: 3,
+            systemImage: "sparkles",
+            title: "Hear the description",
+            body: "Each capture describes what the photo shows. Press OK to aim again."
+        ),
+        TutorialStep(
+            number: 4,
+            systemImage: "slider.horizontal.3",
+            title: "Options",
+            body: "In Options you can turn on Auto-capture, change aiming sounds, and add extra questions."
         )
     ]
 
@@ -56,16 +91,18 @@ struct TutorialView: View {
             .toolbar {
                 if !isFirstLaunch {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done", action: onDone)
-                            .fontWeight(.semibold)
-                            .accessibilityHint("Closes the tutorial")
+                        Button("Done") {
+                            onDismiss(.close)
+                        }
+                        .fontWeight(.semibold)
+                        .accessibilityHint("Closes the tutorial and returns to the camera")
                     }
                 }
                 ToolbarItem(placement: .bottomBar) {
                     Button {
-                        onDone()
+                        onDismiss(isFirstLaunch ? .startPractice : .close)
                     } label: {
-                        Text(isFirstLaunch ? "Get Started" : "Close Tutorial")
+                        Text(isFirstLaunch ? "Start practice" : "Close Tutorial")
                             .fontWeight(.semibold)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 14)
@@ -74,8 +111,12 @@ struct TutorialView: View {
                     .controlSize(.large)
                     .tint(Color.personalEyesAccent)
                     .foregroundStyle(Color(.systemBackground))
-                    .accessibilityLabel(isFirstLaunch ? "Get started" : "Close tutorial")
-                    .accessibilityHint("Returns to the main screen. The camera stays off until you tap the shutter.")
+                    .accessibilityLabel(isFirstLaunch ? "Start practice" : "Close tutorial")
+                    .accessibilityHint(
+                        isFirstLaunch
+                            ? "Turns on the camera so you can practice identifying an object"
+                            : "Returns to the live camera"
+                    )
                 }
             }
         }
@@ -88,10 +129,14 @@ struct TutorialView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Personal Eyes")
                 .font(.largeTitle.bold())
-            Text("Local AI for blind users. Aim, listen, and capture.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                isFirstLaunch
+                    ? "Let’s practice identifying something with your camera."
+                    : "Local AI for blind users. Aim, listen, and capture."
+            )
+            .font(.title3)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)

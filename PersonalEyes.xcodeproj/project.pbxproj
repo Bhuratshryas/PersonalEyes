@@ -23,6 +23,8 @@
 		0A10000E2C00000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 0A10001E2C00000000000001 /* Assets.xcassets */; };
 		0A1100012C00000000000001 /* CustomPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1100022C00000000000001 /* CustomPrompt.swift */; };
 		0A1100032C00000000000001 /* TutorialView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1100042C00000000000001 /* TutorialView.swift */; };
+		0A1100052C00000000000001 /* AimingGuidance.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1100062C00000000000001 /* AimingGuidance.swift */; };
+		0A1100072C00000000000001 /* ObjectBoxDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A1100082C00000000000001 /* ObjectBoxDetector.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +46,8 @@
 		0A10001F2C00000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		0A1100022C00000000000001 /* CustomPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CustomPrompt.swift; sourceTree = "<group>"; };
 		0A1100042C00000000000001 /* TutorialView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TutorialView.swift; sourceTree = "<group>"; };
+		0A1100062C00000000000001 /* AimingGuidance.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AimingGuidance.swift; sourceTree = "<group>"; };
+		0A1100082C00000000000001 /* ObjectBoxDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectBoxDetector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -106,6 +110,8 @@
 				0A10001A2C00000000000002 /* CenteringDetector.swift */,
 				0A10001B2C00000000000001 /* BeepEngine.swift */,
 				0A10001C2C00000000000001 /* AISummarizer.swift */,
+				0A1100062C00000000000001 /* AimingGuidance.swift */,
+				0A1100082C00000000000001 /* ObjectBoxDetector.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -205,6 +211,8 @@
 				0A10000D2C00000000000001 /* CameraOverlayViews.swift in Sources */,
 				0A1100012C00000000000001 /* CustomPrompt.swift in Sources */,
 				0A1100032C00000000000001 /* TutorialView.swift in Sources */,
+				0A1100052C00000000000001 /* AimingGuidance.swift in Sources */,
+				0A1100072C00000000000001 /* ObjectBoxDetector.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -335,11 +343,13 @@
 		0A1000812C00000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = S48C9F3F58;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PersonalEyes/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -350,6 +360,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.camoulabs.PersonalEyes;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -361,11 +372,13 @@
 		0A1000822C00000000000001 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
+				DEVELOPMENT_TEAM = S48C9F3F58;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PersonalEyes/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -376,6 +389,7 @@
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.camoulabs.PersonalEyes;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
