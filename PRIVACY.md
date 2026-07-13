@@ -2,44 +2,29 @@
 
 **Last updated:** July 12, 2026
 
-Personal Eyes (“the App”) is an accessibility camera app for blind and low-vision users. This policy explains what information the App uses and how it is handled.
+Personal Eyes is an accessibility camera app for blind and low-vision users. **We do not collect any data.**
 
-## Summary
+## No data collection
 
-- Camera frames are processed **on your device** to describe what the camera sees.
-- We do **not** upload your photos or videos to our servers.
-- We do **not** create user accounts or collect personal profiles.
-- Optional Apple Intelligence features, when available, run under Apple’s on-device / Apple Intelligence privacy model.
+- We do not collect personal information.
+- We do not collect analytics, advertising, or usage data.
+- We do not create accounts or require sign-in.
+- We do not upload photos, videos, audio, or descriptions to our servers.
+- We do not sell or share user data — because we do not have it.
 
-## Information the App uses
+## What happens on your device
 
-**Camera.** The App requires camera access to capture images and analyze what is in front of you. Captured images are used only to generate an on-device description and are not sent to Camou Labs servers.
+The App uses the camera on your iPhone so it can describe what is in front of you. Image analysis and spoken descriptions run **entirely on your device** using Apple technologies such as Vision and, when available, Apple Intelligence.
 
-**On-device analysis.** The App uses Apple frameworks such as Vision (and, when available, Apple Intelligence / Foundation Models) on your iPhone to classify scenes, detect people or objects, read visible text when enabled, and produce spoken summaries.
+Any settings you change in the App (for example aiming sounds or spoken answers) stay on your device only. They are never sent to Camou Labs.
 
-**App settings.** Preferences you choose (for example aiming sounds, direction cues, detailed description, visible-text reading, and custom questions) are stored locally on your device using standard iOS storage (such as UserDefaults).
+## Permissions
 
-**No account data.** The App does not require sign-in and does not collect your name, email, location, contacts, or payment information.
-
-## Data sharing
-
-Camou Labs does not sell your data and does not operate a Personal Eyes cloud backend that receives your camera images.
-
-If you use Apple system features (for example Apple Intelligence where supported), those features are provided by Apple and governed by Apple’s privacy practices and your device settings.
-
-## Data retention
-
-Captured images and spoken results are kept only as needed for the current session on your device (for example showing the latest result). They are not uploaded to or retained on Camou Labs servers.
+**Camera** is the only sensitive permission the App requests. You can revoke it anytime in iOS Settings. Without camera access, the App cannot describe what it sees.
 
 ## Children’s privacy
 
-The App does not knowingly collect personal information from children. It does not include social features, ads, or user accounts.
-
-## Your choices
-
-- You can deny or revoke camera permission in iOS Settings.
-- You can mute aiming sounds and spoken answers in the App.
-- You can delete the App to remove locally stored preferences.
+Because we do not collect any data, we do not knowingly collect personal information from children.
 
 ## Contact
 
@@ -49,4 +34,4 @@ Website: https://www.shryasbhurat.com
 
 ## Changes
 
-We may update this policy from time to time. The “Last updated” date at the top will change when we do. Continued use of the App after an update means you accept the revised policy.
+If this policy changes, we will update the “Last updated” date above.
