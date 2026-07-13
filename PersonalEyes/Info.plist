@@ -20,6 +20,8 @@
 	<dict/>
 	<key>NSCameraUsageDescription</key>
 	<string>Personal Eyes uses the camera to describe what is in front of you. Aim, hold steady, and the app captures and reads the scene aloud.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
