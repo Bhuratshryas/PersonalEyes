@@ -31,9 +31,6 @@ struct ImageAnalysisService {
             objectName: classificationResult.label,
             confidence: classificationResult.confidence,
             visibleText: preferences.includeVisibleText ? visibleText : [],
-            brandOrLabel: nil,
-            freshnessSummary: nil,
-            recipeIdea: nil,
             timestamp: Date()
         )
     }

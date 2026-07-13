@@ -21,19 +21,19 @@ struct TutorialView: View {
             number: 3,
             systemImage: "hand.raised.fill",
             title: "Hold still on cue",
-            body: "When an object is detected, Personal Eyes says \"Stop. Stop. Stop.\" Hold steady for less than a second. The shutter button works any time too."
+            body: "With Auto-capture on, Personal Eyes says \"Stop. Stop. Stop.\" when an object is ready, then captures after a brief hold. With Auto-capture off, tap the shutter whenever you are ready."
         ),
         TutorialStep(
             number: 4,
             systemImage: "sparkles",
             title: "Hear the response",
-            body: "Apple Intelligence reads a clear, short description by default. A pop-up shows the full text — press OK when you are done. Turn off \"Detailed description\" in Options if you prefer a quick three-word reply."
+            body: "Personal Eyes reads a clear, short on-device description by default. A pop-up shows the full text — press OK when you are done. Turn off \"Detailed description\" in Options if you prefer a quick three-word reply."
         ),
         TutorialStep(
             number: 5,
             systemImage: "questionmark.bubble",
             title: "Ask your own questions",
-            body: "Open Options to add questions like \"What color is this?\", \"Is it safe to eat?\", or \"What does the sign say?\". Personal Eyes will answer them with every capture."
+            body: "Open Options to add questions like \"What color is this?\" or \"What does the sign say?\". When Apple Intelligence is available, Personal Eyes answers them with every capture."
         )
     ]
 
@@ -88,7 +88,7 @@ struct TutorialView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Personal Eyes")
                 .font(.largeTitle.bold())
-            Text("Local AI for blind. Aim, listen, and capture.")
+            Text("Local AI for blind users. Aim, listen, and capture.")
                 .font(.title3)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

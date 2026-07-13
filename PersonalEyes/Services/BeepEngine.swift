@@ -16,6 +16,9 @@ final class BeepEngine: ObservableObject {
         }
     }
 
+    /// Set when audio engine startup fails so the UI can announce it once.
+    @Published private(set) var startErrorMessage: String?
+
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private var beepTimer: Timer?
@@ -42,9 +45,15 @@ final class BeepEngine: ObservableObject {
             try engine.start()
             player.play()
             isStarted = true
+            startErrorMessage = nil
         } catch {
             isStarted = false
+            startErrorMessage = "Sound effects could not start. Spoken summaries may still work."
         }
+    }
+
+    func clearStartError() {
+        startErrorMessage = nil
     }
 
     func stop() {

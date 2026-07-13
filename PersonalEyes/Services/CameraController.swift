@@ -14,6 +14,8 @@ final class CameraController: NSObject, ObservableObject {
     enum State: Equatable {
         case idle
         case unauthorized
+        /// Camera hardware is missing or could not be configured.
+        case unavailable
         case starting
         case aligning
         /// Subject has been centered for long enough that a "hold" cue is
@@ -64,9 +66,13 @@ final class CameraController: NSObject, ObservableObject {
     nonisolated private let videoOutput = AVCaptureVideoDataOutput()
     nonisolated private let centeringDetector = CenteringDetector()
 
+    /// Touched only on ``sessionQueue``.
+    nonisolated(unsafe) private var isConfigured = false
+    /// Touched only on ``frameQueue``.
+    nonisolated(unsafe) private var lastFrameAnalysisDate: Date = .distantPast
+
     private var consecutiveCenteredFrames = 0
-    private var lastAnalysisDate: Date = .distantPast
-    private let minimumAnalysisInterval: TimeInterval = 0.10
+    nonisolated private let minimumAnalysisInterval: TimeInterval = 0.10
     private var holdTask: Task<Void, Never>?
 
     func requestAccessAndStart() async {
@@ -93,27 +99,45 @@ final class CameraController: NSObject, ObservableObject {
         stopSession()
         consecutiveCenteredFrames = 0
         isCenteredEnoughForCapture = false
-        if state != .unauthorized {
+        hasSubject = false
+        centeringDistance = 1.0
+        if state != .unauthorized && state != .unavailable {
             state = .idle
         }
     }
 
-    func resumeAligning() {
+    /// Stops the running session and waits until stop completes. Prefer this
+    /// before starting again so stop/start cannot race on ``sessionQueue``.
+    func stopAndWait() async {
         cancelHold()
+        await stopSessionAsync()
         consecutiveCenteredFrames = 0
         isCenteredEnoughForCapture = false
-        startSession()
-        state = .aligning
+        hasSubject = false
+        centeringDistance = 1.0
+        if state != .unauthorized && state != .unavailable {
+            state = .idle
+        }
     }
 
     func enterShowingResult() {
-        // The camera session is paused while the user reads or listens to the
-        // result. ``resumeAligning()`` will restart it on dismiss.
         cancelHold()
         stopSession()
         consecutiveCenteredFrames = 0
         isCenteredEnoughForCapture = false
+        hasSubject = false
+        centeringDistance = 1.0
         state = .showingResult
+    }
+
+    /// Stops the live preview once a photo has been captured so analysis
+    /// does not keep the camera warm.
+    func enterProcessing() {
+        cancelHold()
+        stopSession()
+        consecutiveCenteredFrames = 0
+        isCenteredEnoughForCapture = false
+        state = .processing
     }
 
     /// Manual capture that mirrors the auto-capture path. Skips the hold cue
@@ -155,39 +179,55 @@ final class CameraController: NSObject, ObservableObject {
 
     private func configureAndStart() async {
         state = .starting
-        await withCheckedContinuation { continuation in
+        let configured = await withCheckedContinuation { continuation in
             sessionQueue.async { [weak self] in
                 guard let self else {
-                    continuation.resume()
+                    continuation.resume(returning: false)
                     return
                 }
-                self.configureSession()
-                self.session.startRunning()
-                continuation.resume()
+                // Always stop first so a quick re-shutter cannot race a prior stop.
+                if self.session.isRunning {
+                    self.session.stopRunning()
+                }
+                let ok = self.configureSessionIfNeeded()
+                if ok {
+                    self.session.startRunning()
+                }
+                continuation.resume(returning: ok)
             }
         }
+
+        guard configured else { return }
+        guard state == .starting else { return }
         state = .aligning
     }
 
-    nonisolated private func startSession() {
-        let session = self.session
-        sessionQueue.async {
-            if !session.isRunning {
-                session.startRunning()
-            }
-        }
-    }
-
     nonisolated private func stopSession() {
-        let session = self.session
-        sessionQueue.async {
+        sessionQueue.async { [session] in
             if session.isRunning {
                 session.stopRunning()
             }
         }
     }
 
-    nonisolated private func configureSession() {
+    private func stopSessionAsync() async {
+        await withCheckedContinuation { continuation in
+            sessionQueue.async { [session] in
+                if session.isRunning {
+                    session.stopRunning()
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Configures inputs/outputs once. Subsequent starts only restart the session.
+    /// Must run on ``sessionQueue``.
+    nonisolated private func configureSessionIfNeeded() -> Bool {
+        if isConfigured {
+            return true
+        }
+
         session.beginConfiguration()
         session.sessionPreset = .photo
 
@@ -203,10 +243,10 @@ final class CameraController: NSObject, ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 Task { @MainActor in
                     self?.onError?("Camera is not available on this device.")
-                    self?.state = .unauthorized
+                    self?.state = .unavailable
                 }
             }
-            return
+            return false
         }
 
         if session.canAddInput(input) {
@@ -225,19 +265,18 @@ final class CameraController: NSObject, ObservableObject {
         videoOutput.setSampleBufferDelegate(self, queue: frameQueue)
         if session.canAddOutput(videoOutput) {
             session.addOutput(videoOutput)
-            if let connection = videoOutput.connection(with: .video) {
-                if connection.isVideoRotationAngleSupported(90) {
-                    connection.videoRotationAngle = 90
-                }
-            }
         }
 
+        // Rotate still photos so UIImage is upright in portrait. Leave the
+        // video data output in sensor orientation and tell Vision `.right`.
         if let photoConnection = photoOutput.connection(with: .video),
            photoConnection.isVideoRotationAngleSupported(90) {
             photoConnection.videoRotationAngle = 90
         }
 
         session.commitConfiguration()
+        isConfigured = true
+        return true
     }
 
     private func triggerCapture() {
@@ -268,17 +307,20 @@ extension CameraController: AVCaptureVideoDataOutputSampleBufferDelegate {
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        // Throttle Vision work on the frame queue before running saliency.
+        let now = Date()
+        guard now.timeIntervalSince(lastFrameAnalysisDate) >= minimumAnalysisInterval else { return }
+        lastFrameAnalysisDate = now
+
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-        let now = Date()
-        let reading = centeringDetector.reading(for: pixelBuffer, orientation: .up)
+        // Back camera buffers stay in landscape sensor orientation; portrait
+        // apps map that to CGImagePropertyOrientation.right.
+        let reading = centeringDetector.reading(for: pixelBuffer, orientation: .right)
 
         Task { @MainActor in
             // Centering is only meaningful while the user is actively framing.
-            // During a hold, the lock is enforced by the holdTask itself.
             guard self.state == .aligning || self.state == .holding else { return }
-            guard now.timeIntervalSince(self.lastAnalysisDate) >= self.minimumAnalysisInterval else { return }
-            self.lastAnalysisDate = now
 
             self.centeringDistance = reading.distance
             self.hasSubject = reading.hasSubject
@@ -336,7 +378,7 @@ extension CameraController: AVCapturePhotoCaptureDelegate {
         }
 
         Task { @MainActor in
-            self.state = .processing
+            self.enterProcessing()
             self.onPhotoCaptured?(image)
         }
     }

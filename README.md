@@ -1,6 +1,6 @@
 # Personal Eyes
 
-Native iOS app for blind and low-vision users: **local AI** describes what the camera sees. Processing stays on device (Vision OCR and classification, optional Apple Intelligence summaries). The interaction takes inspiration from [Bhuratshryas/od_prj](https://github.com/Bhuratshryas/od_prj).
+Native iOS app for blind and low-vision users: **local AI** describes what the camera sees. Processing stays on device (Vision OCR and classification, optional Apple Intelligence summaries).
 
 ## Features
 
@@ -21,7 +21,7 @@ Native iOS app for blind and low-vision users: **local AI** describes what the c
 
 - All vision and language processing happen on device.
 - No images are uploaded to our servers.
-- **Camera** (and photo library if you add import later) are the permissions surfaced in the app.
+- **Camera** is the only privacy-sensitive permission the app requests.
 
 ## Requirements
 
@@ -44,6 +44,6 @@ Native iOS app for blind and low-vision users: **local AI** describes what the c
 - `PersonalEyes/Services/ImageAnalysisService.swift` — Vision OCR + classification.
 - `PersonalEyes/Services/AISummarizer.swift` — Apple Intelligence summary with deterministic fallback.
 - `PersonalEyes/Services/SpeechAnnouncer.swift` — Speech synthesis and VoiceOver announcements with `isSpeaking` state.
-- `PersonalEyes/Views` — `CameraPreviewView`, `CameraOverlayViews` (reticle, status banner, shutter, unauthorized state), `Components`, `TutorialView`.
-- `PersonalEyes/Models` — Analysis preferences and the structured result.
+- `PersonalEyes/Views` — `CameraPreviewView`, `CameraOverlayViews` (reticle, status banner, shutter, unauthorized/unavailable states), `Components`, `TutorialView`.
+- `PersonalEyes/Models` — Analysis preferences (persisted), custom prompts, and the structured result.
 - `PersonalEyes/Assets.xcassets` — App icon (1024 by 1024) and accent color.

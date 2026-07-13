@@ -24,8 +24,8 @@ struct PreferenceToggle: View {
             }
         }
         .tint(Color.personalEyesAccent)
-        .accessibilityElement(children: .combine)
         .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityHint(subtitle)
     }
 }
@@ -76,7 +76,7 @@ struct CustomPromptsEditor: View {
         } header: {
             Text("Custom Questions")
         } footer: {
-            Text("Personal Eyes will answer your enabled questions about each captured image, in order, when Apple Intelligence is available. Swipe a row to delete it.")
+            Text("When Apple Intelligence is available, Personal Eyes answers enabled questions about each capture, in order. On devices without it, you still get the on-device description, and questions are skipped. Swipe a row to delete.")
         }
     }
 
@@ -114,14 +114,14 @@ private struct CustomPromptRow: View {
                 }
                 .onChange(of: draft) { _, newValue in
                     if newValue != prompt.question {
-                        store.update(prompt, question: newValue)
+                        store.update(prompt, question: newValue, debounce: true)
                     }
                 }
                 .accessibilityLabel("Question text")
         }
         .tint(Color.personalEyesAccent)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(prompt.question), \(prompt.isEnabled ? "enabled" : "disabled")")
+        .accessibilityLabel("\(draft.isEmpty ? prompt.question : draft), \(prompt.isEnabled ? "enabled" : "disabled")")
         .accessibilityHint("Double-tap to toggle. Swipe to delete.")
     }
 

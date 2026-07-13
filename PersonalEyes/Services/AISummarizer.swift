@@ -57,7 +57,7 @@ struct AISummarizer {
             .filter { !$0.isEmpty }
 
         var lines: [String] = []
-        lines.append("You are a visual assistant for a blind user. They captured a photo.")
+        lines.append("You are a visual assistant for a blind or low-vision user. They captured a photo.")
         lines.append("Be concise, accurate, and natural. Never invent details that are not supported by the input. Never start with greetings or meta phrases.")
 
         if input.preferences.detailedDescription {
@@ -118,13 +118,12 @@ struct AISummarizer {
             if input.preferences.detailedDescription {
                 parts.append("This appears to be \(classification).")
             } else {
-                // Three-word style fallback
-                parts.append(classification)
+                parts.append(threeWordPhrase(from: classification))
             }
         } else if input.preferences.detailedDescription {
             parts.append("I could not confidently identify the main object.")
         } else {
-            parts.append("Unclear object.")
+            parts.append("unclear main object")
         }
 
         if input.preferences.includeVisibleText, !input.visibleText.isEmpty {
@@ -137,7 +136,7 @@ struct AISummarizer {
                 if input.preferences.detailedDescription {
                     parts.append("Visible text includes: \(highlights).")
                 } else {
-                    parts.append("Text: \(highlights).")
+                    parts.append("Text: \(highlights)")
                 }
             }
         }
@@ -146,9 +145,19 @@ struct AISummarizer {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         if !cleanedQuestions.isEmpty {
-            parts.append("Apple Intelligence is unavailable, so your custom questions could not be answered this time.")
+            parts.append("Custom questions need Apple Intelligence, which is not available right now.")
         }
 
         return parts.joined(separator: " ")
+    }
+
+    /// Keeps the short mode honest when Vision returns a long label string.
+    private func threeWordPhrase(from classification: String) -> String {
+        let words = classification
+            .split(whereSeparator: { $0.isWhitespace || $0 == "_" || $0 == "-" })
+            .map(String.init)
+            .filter { !$0.isEmpty }
+        if words.isEmpty { return "unclear object" }
+        return words.prefix(3).joined(separator: " ").lowercased()
     }
 }

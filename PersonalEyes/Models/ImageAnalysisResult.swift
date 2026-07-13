@@ -5,9 +5,6 @@ struct ImageAnalysisResult: Equatable, Identifiable {
     var objectName: String?
     var confidence: Float?
     var visibleText: [String]
-    var brandOrLabel: String?
-    var freshnessSummary: String?
-    var recipeIdea: String?
     var aiSummary: String?
     var usedAppleIntelligence: Bool = false
     var timestamp: Date
@@ -30,20 +27,8 @@ struct ImageAnalysisResult: Equatable, Identifiable {
             parts.append("I could not confidently identify the main object.")
         }
 
-        if let brandOrLabel {
-            parts.append("Label or brand text: \(brandOrLabel).")
-        }
-
         if !visibleText.isEmpty {
             parts.append("Visible text includes \(visibleText.prefix(3).joined(separator: ", ")).")
-        }
-
-        if let freshnessSummary {
-            parts.append(freshnessSummary)
-        }
-
-        if let recipeIdea {
-            parts.append("Recipe idea: \(recipeIdea).")
         }
 
         return parts.joined(separator: " ")
@@ -53,9 +38,6 @@ struct ImageAnalysisResult: Equatable, Identifiable {
         objectName: nil,
         confidence: nil,
         visibleText: [],
-        brandOrLabel: nil,
-        freshnessSummary: nil,
-        recipeIdea: nil,
         timestamp: Date()
     )
 }

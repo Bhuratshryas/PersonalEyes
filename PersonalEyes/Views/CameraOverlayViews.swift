@@ -6,6 +6,8 @@ struct CenteringReticleView: View {
     var isHolding: Bool
     var isProcessing: Bool
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
         ZStack {
             outerRing
@@ -27,11 +29,11 @@ struct CenteringReticleView: View {
         }
         .compositingGroup()
         .opacity(isProcessing ? 0.0 : 1.0)
-        .scaleEffect(isHolding ? 1.04 : 1.0)
-        .animation(.easeInOut(duration: 0.18), value: distance)
-        .animation(.easeInOut(duration: 0.25), value: hasSubject)
-        .animation(.easeInOut(duration: 0.25), value: isProcessing)
-        .animation(.easeOut(duration: 0.4), value: isHolding)
+        .scaleEffect(isHolding && !reduceMotion ? 1.04 : 1.0)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: distance)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: hasSubject)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: isProcessing)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.4), value: isHolding)
         .accessibilityHidden(true)
     }
 
@@ -93,6 +95,7 @@ struct StatusBanner: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 0.5)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title). \(subtitle)")
     }
 }
 
@@ -171,5 +174,30 @@ struct UnauthorizedCameraView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground))
         .accessibilityElement(children: .contain)
+    }
+}
+
+struct UnavailableCameraView: View {
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 38, weight: .semibold))
+                .foregroundStyle(Color.personalEyesAccent)
+                .accessibilityHidden(true)
+
+            Text("Camera unavailable")
+                .font(.title2.bold())
+
+            Text("Personal Eyes could not find a usable camera on this device. Try again on an iPhone with a working rear camera.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 320)
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemGroupedBackground))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Camera unavailable. Personal Eyes could not find a usable camera on this device.")
     }
 }

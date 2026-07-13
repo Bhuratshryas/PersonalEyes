@@ -6,8 +6,8 @@ struct ContentView: View {
     @StateObject private var speaker = SpeechAnnouncer()
     @StateObject private var beepEngine = BeepEngine()
     @StateObject private var promptStore = PromptStore()
+    @StateObject private var preferenceStore = PreferenceStore()
 
-    @State private var preferences = AnalysisPreferences()
     @State private var result: ImageAnalysisResult?
     @State private var capturedImage: UIImage?
     @State private var isShowingResultAlert = false
@@ -16,6 +16,10 @@ struct ContentView: View {
     @State private var alertMessage: String?
     @State private var hasStartedAudio = false
     @State private var isCameraWired = false
+    @State private var analysisTask: Task<Void, Never>?
+    @State private var analysisGeneration = 0
+    /// Toolbar master mute overlays Options without overwriting independent prefs.
+    @State private var isMasterMuted = false
 
     @AppStorage("PersonalEyes.hasSeenTutorial") private var hasSeenTutorial: Bool = false
     @Environment(\.scenePhase) private var scenePhase
@@ -23,10 +27,20 @@ struct ContentView: View {
     private let analyzer = ImageAnalysisService()
     private let summarizer = AISummarizer()
 
+    private var preferences: AnalysisPreferences {
+        preferenceStore.preferences
+    }
+
+    private var preferencesBinding: Binding<AnalysisPreferences> {
+        $preferenceStore.preferences
+    }
+
     var body: some View {
         Group {
             if camera.state == .unauthorized {
                 UnauthorizedCameraView(onOpenSettings: openSystemSettings)
+            } else if camera.state == .unavailable {
+                UnavailableCameraView()
             } else {
                 cameraScreen
             }
@@ -54,10 +68,13 @@ struct ContentView: View {
         .onChange(of: camera.state) { _, newState in
             handleStateChange(newState)
         }
-        .onChange(of: preferences.autoCaptureEnabled) { _, _ in
+        .onChange(of: preferenceStore.preferences.autoCaptureEnabled) { _, _ in
             applyPreferencesToServices()
         }
-        .onChange(of: preferences.soundEffectsEnabled) { _, _ in
+        .onChange(of: preferenceStore.preferences.soundEffectsEnabled) { _, _ in
+            applyPreferencesToServices()
+        }
+        .onChange(of: isMasterMuted) { _, _ in
             applyPreferencesToServices()
         }
         .onChange(of: isShowingTutorial) { _, isShowing in
@@ -68,6 +85,12 @@ struct ContentView: View {
         }
         .onChange(of: isShowingSettings) { _, isShowing in
             handleSettingsChange(isShowing: isShowing)
+        }
+        .onChange(of: beepEngine.startErrorMessage) { _, message in
+            guard let message else { return }
+            alertMessage = message
+            UIAccessibility.post(notification: .announcement, argument: message)
+            beepEngine.clearStartError()
         }
         .alert(
             "Personal Eyes Result",
@@ -149,24 +172,22 @@ struct ContentView: View {
                 Text("Personal Eyes")
                     .font(.headline)
                     .foregroundStyle(.white)
-                Text("Local AI for blind")
+                Text("Local AI for blind users")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.75))
             }
             .accessibilityElement(children: .combine)
-            .accessibilityLabel("Personal Eyes. Local AI for blind.")
+            .accessibilityLabel("Personal Eyes. Local AI for blind users.")
             .accessibilityAddTraits(.isHeader)
 
             Spacer()
 
             Button {
-                let willMute = isAnyAudioOn
-                preferences.soundEffectsEnabled = !willMute
-                preferences.spokenSummaryEnabled = !willMute
+                isMasterMuted.toggle()
                 speaker.stop()
                 UIAccessibility.post(
                     notification: .announcement,
-                    argument: willMute ? "Audio off" : "Audio on"
+                    argument: isMasterMuted ? "Audio muted" : "Audio unmuted"
                 )
             } label: {
                 Image(systemName: isAnyAudioOn ? "speaker.wave.2.fill" : "speaker.slash.fill")
@@ -175,10 +196,12 @@ struct ContentView: View {
                     .frame(width: 40, height: 40)
                     .background(.ultraThinMaterial, in: Circle())
             }
-            .accessibilityLabel(isAnyAudioOn ? "Mute audio" : "Unmute audio")
-            .accessibilityHint(isAnyAudioOn
-                ? "Silences sound effects and the spoken summary"
-                : "Turns sound effects and the spoken summary back on")
+            .accessibilityLabel(isMasterMuted ? "Unmute audio" : "Mute audio")
+            .accessibilityHint(
+                isMasterMuted
+                    ? "Restores sound effects and spoken summary based on Options"
+                    : "Temporarily silences sound effects and the spoken summary without changing Options"
+            )
 
             Button {
                 isShowingTutorial = true
@@ -273,34 +296,34 @@ struct ContentView: View {
                     PreferenceToggle(
                         title: "Auto-capture",
                         subtitle: "Captures automatically when an object is in the frame.",
-                        isOn: $preferences.autoCaptureEnabled
+                        isOn: preferencesBinding.autoCaptureEnabled
                     )
                     PreferenceToggle(
                         title: "Sound effects",
                         subtitle: "Centering beep, hold cue, capture chime, and processing tone.",
-                        isOn: $preferences.soundEffectsEnabled
+                        isOn: preferencesBinding.soundEffectsEnabled
                     )
                     PreferenceToggle(
                         title: "Spoken summary",
                         subtitle: "Reads the result aloud after each capture.",
-                        isOn: $preferences.spokenSummaryEnabled
+                        isOn: preferencesBinding.spokenSummaryEnabled
                     )
                 } header: {
                     Text("Capture & Audio")
                 } footer: {
-                    Text("With auto-capture off, the round shutter button captures on demand. Sound effects and the spoken summary can be muted independently.")
+                    Text("With auto-capture off, the round shutter button captures on demand. Sound effects and the spoken summary can be muted independently in Options. The toolbar mute button silences both temporarily.")
                 }
 
                 Section {
                     PreferenceToggle(
                         title: "Detailed description",
                         subtitle: "On: 1 to 2 sentences with context. Off: a fast 3-word reply.",
-                        isOn: $preferences.detailedDescription
+                        isOn: preferencesBinding.detailedDescription
                     )
                     PreferenceToggle(
                         title: "Read visible text",
                         subtitle: "Includes useful labels, signs, prices, and packaging text in the response.",
-                        isOn: $preferences.includeVisibleText
+                        isOn: preferencesBinding.includeVisibleText
                     )
                 } header: {
                     Text("What Personal Eyes Says")
@@ -331,7 +354,7 @@ struct ContentView: View {
                             Text("Personal Eyes")
                                 .font(.headline)
                         }
-                        Text("Local AI for blind")
+                        Text("Local AI for blind users")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                         HStack(spacing: 6) {
@@ -344,7 +367,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                     }
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Personal Eyes. Local AI for blind. All processing happens on device.")
+                    .accessibilityLabel("Personal Eyes. Local AI for blind users. All processing happens on device.")
                 }
             }
             .navigationTitle("Options")
@@ -362,11 +385,19 @@ struct ContentView: View {
         .tint(Color.personalEyesAccent)
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
-        .preferredColorScheme(.light)
+        .preferredColorScheme(.dark)
     }
 
     private var isAnyAudioOn: Bool {
-        preferences.soundEffectsEnabled || preferences.spokenSummaryEnabled
+        !isMasterMuted && (preferences.soundEffectsEnabled || preferences.spokenSummaryEnabled)
+    }
+
+    private var effectiveSoundEffectsEnabled: Bool {
+        !isMasterMuted && preferences.soundEffectsEnabled
+    }
+
+    private var effectiveSpokenSummaryEnabled: Bool {
+        !isMasterMuted && preferences.spokenSummaryEnabled
     }
 
     private var hasErrorAlert: Binding<Bool> {
@@ -381,6 +412,7 @@ struct ContentView: View {
         case .idle: return "Ready to scan"
         case .starting: return "Starting camera"
         case .unauthorized: return "Camera access needed"
+        case .unavailable: return "Camera unavailable"
         case .aligning:
             if !camera.hasSubject { return "Looking for an object" }
             if camera.centeringDistance < camera.centeredThreshold {
@@ -401,9 +433,10 @@ struct ContentView: View {
         case .starting:
             return "Hold the phone upright."
         case .unauthorized: return "Open Settings to allow camera access."
+        case .unavailable: return "This device does not have a usable camera."
         case .aligning:
             if !camera.hasSubject {
-                return preferences.soundEffectsEnabled
+                return effectiveSoundEffectsEnabled
                     ? "Move slowly until you hear a beep."
                     : "Move slowly until something is in view."
             }
@@ -412,12 +445,12 @@ struct ContentView: View {
                     ? "Capturing in a moment."
                     : "Tap the shutter button to capture."
             }
-            return preferences.soundEffectsEnabled
+            return effectiveSoundEffectsEnabled
                 ? "The beep gets faster as the object centers."
                 : "Move slowly to bring the object into view."
         case .holding: return "Capturing now."
         case .capturing: return "Reading the image."
-        case .processing: return "Apple Intelligence is writing the response."
+        case .processing: return "Reading text and writing a spoken summary."
         case .showingResult: return "Listen, then press OK. Tap the shutter when you want another picture."
         }
     }
@@ -429,7 +462,7 @@ struct ContentView: View {
         case .processing: return "waveform"
         case .capturing: return "camera.fill"
         case .showingResult: return "checkmark.seal.fill"
-        case .unauthorized: return "exclamationmark.triangle.fill"
+        case .unauthorized, .unavailable: return "exclamationmark.triangle.fill"
         default: return "viewfinder"
         }
     }
@@ -456,7 +489,12 @@ struct ContentView: View {
         guard !isCameraWired else { return }
         camera.onPhotoCaptured = { image in
             Task { @MainActor in
-                await self.handleCapturedImage(image)
+                self.analysisTask?.cancel()
+                self.analysisGeneration += 1
+                let generation = self.analysisGeneration
+                self.analysisTask = Task { @MainActor in
+                    await self.handleCapturedImage(image, generation: generation)
+                }
             }
         }
         camera.onError = { message in
@@ -469,7 +507,7 @@ struct ContentView: View {
 
     private func applyPreferencesToServices() {
         camera.isAutoCaptureEnabled = preferences.autoCaptureEnabled
-        beepEngine.isMuted = !preferences.soundEffectsEnabled
+        beepEngine.isMuted = !effectiveSoundEffectsEnabled
     }
 
     private func shutterTapped() {
@@ -480,7 +518,7 @@ struct ContentView: View {
             }
         case .aligning, .holding:
             camera.captureNow()
-        case .starting, .capturing, .processing, .unauthorized, .showingResult:
+        case .starting, .capturing, .processing, .unauthorized, .unavailable, .showingResult:
             break
         }
     }
@@ -491,11 +529,18 @@ struct ContentView: View {
         hasStartedAudio = true
     }
 
+    private func cancelInFlightAnalysis() {
+        analysisTask?.cancel()
+        analysisTask = nil
+        analysisGeneration += 1
+    }
+
     private func handleScenePhaseChange(_ newPhase: ScenePhase) {
         switch newPhase {
         case .background, .inactive:
             // Stop talking and beeping the moment the user returns to home
             // screen, locks the device, or backgrounds the app for any reason.
+            cancelInFlightAnalysis()
             speaker.stop()
             beepEngine.stop()
             hasStartedAudio = false
@@ -513,6 +558,7 @@ struct ContentView: View {
     private func handleTutorialChange(isShowing: Bool) {
         if isShowing {
             // Camera and audio are paused while the user reads the tutorial.
+            cancelInFlightAnalysis()
             speaker.stop()
             beepEngine.stopCenteringBeep()
             beepEngine.stopProcessingTone()
@@ -525,6 +571,7 @@ struct ContentView: View {
     @MainActor
     private func handleSettingsChange(isShowing: Bool) {
         guard isShowing else { return }
+        cancelInFlightAnalysis()
         speaker.stop()
         beepEngine.stopCenteringBeep()
         beepEngine.stopProcessingTone()
@@ -548,13 +595,14 @@ struct ContentView: View {
         case .aligning:
             beepEngine.updateCenteringBeep(distance: camera.centeringDistance)
         case .holding:
-            // Tell the user to hold the camera still right before capture so
-            // motion blur and shake do not ruin the shot. Both the beep and
-            // the spoken cue follow the Sound effects toggle.
+            // Hold cue must reach blind users even when sound effects are off.
             beepEngine.stopCenteringBeep()
             beepEngine.playHoldCue()
-            if preferences.soundEffectsEnabled {
-                speaker.speak("Stop. Stop. Stop.")
+            let holdPhrase = "Stop. Stop. Stop."
+            if effectiveSpokenSummaryEnabled, !UIAccessibility.isVoiceOverRunning {
+                speaker.speak(holdPhrase)
+            } else {
+                UIAccessibility.post(notification: .announcement, argument: holdPhrase)
             }
         case .capturing:
             beepEngine.stopCenteringBeep()
@@ -569,18 +617,24 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func handleCapturedImage(_ image: UIImage) async {
+    private func handleCapturedImage(_ image: UIImage, generation: Int) async {
+        guard generation == analysisGeneration else { return }
         capturedImage = image
         UIAccessibility.post(notification: .announcement, argument: "Image captured. Analyzing.")
 
         do {
             let analysis = try await analyzer.analyze(image, preferences: preferences)
+            try Task.checkCancellation()
+            guard generation == analysisGeneration else { return }
+
             let summary = await summarizer.summarize(.init(
                 visibleText: analysis.visibleText,
                 classification: analysis.objectName,
                 preferences: preferences,
                 customQuestions: promptStore.enabledQuestions
             ))
+            try Task.checkCancellation()
+            guard generation == analysisGeneration else { return }
 
             var enriched = analysis
             enriched.aiSummary = summary.summary
@@ -592,10 +646,13 @@ struct ContentView: View {
 
             // Speak the summary unless the user disabled spoken playback or
             // VoiceOver is running (in which case VoiceOver reads the alert).
-            if preferences.spokenSummaryEnabled, !UIAccessibility.isVoiceOverRunning {
+            if effectiveSpokenSummaryEnabled, !UIAccessibility.isVoiceOverRunning {
                 speaker.speak(enriched.spokenSummary)
             }
+        } catch is CancellationError {
+            beepEngine.stopProcessingTone()
         } catch {
+            guard generation == analysisGeneration else { return }
             beepEngine.stopProcessingTone()
             alertMessage = error.localizedDescription
             camera.stop()
@@ -604,17 +661,15 @@ struct ContentView: View {
 
     @MainActor
     private func replaySpokenSummary(of value: ImageAnalysisResult) {
-        // The system alert will be re-presented on the next runloop tick so
-        // the user can still tap OK after listening again.
         speaker.stop()
         if UIAccessibility.isVoiceOverRunning {
             UIAccessibility.post(notification: .announcement, argument: value.spokenSummary)
-        } else if preferences.spokenSummaryEnabled {
+        } else if effectiveSpokenSummaryEnabled {
             speaker.speak(value.spokenSummary)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            isShowingResultAlert = true
-        }
+        // Keep the result alert up; do not dismiss and re-present (that
+        // steals VoiceOver focus).
+        isShowingResultAlert = true
     }
 
     @MainActor

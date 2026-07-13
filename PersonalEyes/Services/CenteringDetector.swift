@@ -8,7 +8,7 @@ import Vision
 /// We use the objectness-based variant (rather than attention-based) so the
 /// detector reacts to actual objects in view, not just visually striking
 /// regions like sky or shadows.
-struct CenteringDetector {
+final class CenteringDetector: @unchecked Sendable {
     struct Reading {
         /// Distance from frame center, normalized to 0 (centered) ... 1 (corner).
         var distance: Float
@@ -19,11 +19,12 @@ struct CenteringDetector {
         var hasSubject: Bool
     }
 
+    private let request = VNGenerateObjectnessBasedSaliencyImageRequest()
+
     func reading(
         for pixelBuffer: CVPixelBuffer,
         orientation: CGImagePropertyOrientation
     ) -> Reading {
-        let request = VNGenerateObjectnessBasedSaliencyImageRequest()
         let handler = VNImageRequestHandler(
             cvPixelBuffer: pixelBuffer,
             orientation: orientation,

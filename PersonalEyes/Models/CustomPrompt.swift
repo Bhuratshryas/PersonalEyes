@@ -18,6 +18,7 @@ final class PromptStore: ObservableObject {
 
     private let storageKey = "PersonalEyes.customPrompts.v1"
     private let defaults: UserDefaults
+    private var persistTask: Task<Void, Never>?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -40,27 +41,27 @@ final class PromptStore: ObservableObject {
         }
         let prompt = CustomPrompt(question: trimmed)
         prompts.append(prompt)
-        persist()
+        persist(immediately: true)
         return prompt
     }
 
-    func update(_ prompt: CustomPrompt, question: String) {
+    func update(_ prompt: CustomPrompt, question: String, debounce: Bool = false) {
         guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         prompts[index].question = trimmed
-        persist()
+        persist(immediately: !debounce)
     }
 
     func setEnabled(_ prompt: CustomPrompt, isEnabled: Bool) {
         guard let index = prompts.firstIndex(where: { $0.id == prompt.id }) else { return }
         prompts[index].isEnabled = isEnabled
-        persist()
+        persist(immediately: true)
     }
 
     func remove(at offsets: IndexSet) {
         prompts.remove(atOffsets: offsets)
-        persist()
+        persist(immediately: true)
     }
 
     private func load() {
@@ -74,7 +75,20 @@ final class PromptStore: ObservableObject {
         prompts = decoded
     }
 
-    private func persist() {
+    private func persist(immediately: Bool) {
+        persistTask?.cancel()
+        if immediately {
+            writeToDefaults()
+            return
+        }
+        persistTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            writeToDefaults()
+        }
+    }
+
+    private func writeToDefaults() {
         guard let data = try? JSONEncoder().encode(prompts) else { return }
         defaults.set(data, forKey: storageKey)
     }
