@@ -22,6 +22,8 @@
 	<string>Personal Eyes uses the camera to describe what is in front of you. Aim, hold steady, and the app captures and reads the scene aloud.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -30,6 +32,8 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

@@ -15,7 +15,7 @@ struct ObjectBoundingBoxOverlay: View {
         GeometryReader { geo in
             ZStack {
                 // Soft vignette toward the tracked subject.
-                if let box {
+                if box != nil {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(
                             LinearGradient(

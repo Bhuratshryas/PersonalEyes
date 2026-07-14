@@ -179,7 +179,7 @@ struct AISummarizer {
         narration: String,
         fallbackSubject: String?
     ) -> String {
-        var spoken = narration.trimmingCharacters(in: .whitespacesAndNewlines)
+        let spoken = narration.trimmingCharacters(in: .whitespacesAndNewlines)
         if !spoken.isEmpty {
             return spoken
         }
